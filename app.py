@@ -5,6 +5,7 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
+from streamlit_autorefresh import st_autorefresh
 import json
 from pathlib import Path
 
@@ -311,6 +312,51 @@ def score_signal(last, bias, threshold=78, use_smc=True):
     return "WAIT", int(max(long_score, short_score)), long_checks if long_score >= short_score else short_checks
 
 
+
+@st.cache_data(ttl=55, show_spinner=False)
+def scan_all_market_signals():
+    """Fetch and evaluate each configured market for the overview dashboard.
+    This reports signals only; it does not open paper positions for every market.
+    """
+    rows = []
+    for name, config in MARKETS.items():
+        tf = config["signal_tf"]
+        try:
+            raw_market = download_data(config["symbol"], tf)
+            htf_market = download_data(config["symbol"], config["htf"])
+            if raw_market.empty or len(raw_market) < 60:
+                rows.append({
+                    "Market": name, "Symbol": config["symbol"], "TF": tf,
+                    "Last close": None, "HTF bias": "Unknown",
+                    "Signal": "DATA UNAVAILABLE", "Rule-fit": None,
+                    "RSI": None, "ADX": None, "Data status": "Insufficient candles or provider returned no data"
+                })
+                continue
+            market_data = add_smc_features(add_adaptive_levels(add_indicators(raw_market), tf))
+            htf_processed = add_smc_features(add_adaptive_levels(add_indicators(htf_market), config["htf"])) if not htf_market.empty else htf_market
+            bias_value, _ = htf_bias(htf_processed) if not htf_processed.empty else ("Unknown", None)
+            last_row = market_data.iloc[-1]
+            best_side, best_score, _, hard_pass = score_signal(last_row, bias_value, threshold=78)
+            signal_value = best_side if best_side in ("BUY", "SELL") and hard_pass else "WAIT"
+            rows.append({
+                "Market": name, "Symbol": config["symbol"], "TF": tf,
+                "Last close": round(float(last_row["Close"]), 5),
+                "HTF bias": bias_value, "Signal": signal_value,
+                "Rule-fit": int(best_score),
+                "RSI": round(float(last_row["RSI"]), 1) if pd.notna(last_row["RSI"]) else None,
+                "ADX": round(float(last_row["ADX"]), 1) if pd.notna(last_row["ADX"]) else None,
+                "Data status": "OK"
+            })
+        except Exception as exc:
+            rows.append({
+                "Market": name, "Symbol": config["symbol"], "TF": tf,
+                "Last close": None, "HTF bias": "Unknown",
+                "Signal": "DATA ERROR", "Rule-fit": None,
+                "RSI": None, "ADX": None, "Data status": str(exc)[:120]
+            })
+    return pd.DataFrame(rows)
+
+
 def make_trade_levels(last, side, risk_pct, rr2):
     entry = float(last["Close"])
     atr = float(last["ATR"])
@@ -358,14 +404,13 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
     bar_time = str(d.index[-1])
     market_key = f"{market_name}|{timeframe}"
     processed = st.session_state.get("auto_last_processed", {})
-    if market_key in processed and processed[market_key] == bar_time:
-        # Still manage existing positions on a repeated scan of the same bar only if prices changed?
-        # Skip duplicate processing so a repeated click cannot double-count a candle.
-        return balance, trades_today, daily_start_balance, open_positions, events, "Latest candle already processed; no duplicate trade."
+    already_processed = processed.get(market_key) == bar_time
 
-    # Manage open positions for this market using the newest bar's OHLC.
+    # Manage open positions on every scan, including repeated scans of the same candle.
+    # This lets the simulator react if the provider updates the current candle's OHLC.
     bar = last
     still_open = []
+    closed_records = []
     for pos in open_positions:
         if pos["Market"] != market_name:
             still_open.append(pos)
@@ -382,6 +427,15 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
             else:
                 pnl = ((pos["Stop"]-pos["Entry"]) if side=="BUY" else (pos["Entry"]-pos["Stop"])) * qty
             balance += pnl
+            closed_at = float(pos["Stop"])
+            closed_records.append({
+                "Time": datetime.now().isoformat(timespec="seconds"), "Opened": pos.get("Opened"),
+                "Market": pos.get("Market"), "Symbol": pos.get("Symbol"), "TF": pos.get("Timeframe"),
+                "Side": side, "Score": pos.get("Score"), "Entry": pos.get("Entry"),
+                "Stop": pos.get("InitialStop", pos.get("Stop")), "TP1": pos.get("TP1"), "TP2": pos.get("TP2"),
+                "Exit": closed_at, "Exit reason": "SL / break-even stop", "Qty": qty,
+                "PnL (estimated price-units)": pnl, "Status": "CLOSED"
+            })
             events.append(f"Closed {side} {market_name} at stop-loss; estimated paper P&L {pnl:.2f} price-units.")
             continue
         if tp1_hit and not pos["TP1_Hit"]:
@@ -399,10 +453,23 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
                 partial = ((pos["TP1"]-pos["Entry"]) if side=="BUY" else (pos["Entry"]-pos["TP1"])) * qty * 0.6
                 pnl = partial + ((pos["TP2"]-pos["Entry"]) if side=="BUY" else (pos["Entry"]-pos["TP2"])) * qty * 0.4
             balance += pnl
+            closed_records.append({
+                "Time": datetime.now().isoformat(timespec="seconds"), "Opened": pos.get("Opened"),
+                "Market": pos.get("Market"), "Symbol": pos.get("Symbol"), "TF": pos.get("Timeframe"),
+                "Side": side, "Score": pos.get("Score"), "Entry": pos.get("Entry"),
+                "Stop": pos.get("InitialStop", pos.get("Stop")), "TP1": pos.get("TP1"), "TP2": pos.get("TP2"),
+                "Exit": float(pos["TP2"]), "Exit reason": "TP2", "Qty": qty,
+                "PnL (estimated price-units)": pnl, "Status": "CLOSED"
+            })
             events.append(f"TP2 hit on {market_name}; position closed, estimated paper P&L {pnl:.2f} price-units.")
             continue
         still_open.append(pos)
     open_positions = still_open
+    if closed_records:
+        if "trades" not in st.session_state:
+            st.session_state.trades = load_trade_log()
+        st.session_state.trades.extend(closed_records)
+        persist_trade_log(st.session_state.trades)
 
     # Reset daily risk baseline when the date changes.
     today = datetime.now().date().isoformat()
@@ -425,6 +492,11 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
         processed[market_key] = bar_time
         st.session_state.auto_last_processed = processed
         return balance, trades_today, daily_start_balance, open_positions, events, "Daily trade cap reached."
+
+    if already_processed:
+        processed[market_key] = bar_time
+        st.session_state.auto_last_processed = processed
+        return balance, trades_today, daily_start_balance, open_positions, events, "Existing positions checked; this candle was already evaluated for entry."
 
     if any(p["Market"] == market_name for p in open_positions):
         events.append("An open simulated position already exists for this market; no duplicate entry.")
@@ -611,6 +683,12 @@ if "auto_daily_start_balance" not in st.session_state:
 if "auto_bot_status" not in st.session_state:
     st.session_state.auto_bot_status = "STOPPED"
 
+# Streamlit reruns the script on this timer while the browser session is connected.
+# Automatic paper scans are gated below so ordinary UI reruns do not trigger new entries.
+auto_refresh_count = st_autorefresh(interval=60_000, limit=None, key="ai_brain_auto_refresh_60s")
+if "auto_last_refresh_count" not in st.session_state:
+    st.session_state.auto_last_refresh_count = auto_refresh_count
+
 today_key = datetime.now().date().isoformat()
 if st.session_state.trade_day != today_key:
     st.session_state.trade_day = today_key
@@ -624,10 +702,21 @@ col2.metric("Paper trades today", f"{st.session_state.trades_today}/{max_trades_
 col3.metric("Daily loss stop", f"{max_daily_loss:.1f}%")
 col4.metric("Risk per setup", f"{risk_pct:.2f}%")
 
-if st.button("🔄 Refresh market data", type="primary"):
+if st.button("🔄 Refresh all market data", type="primary"):
     st.cache_data.clear()
 
-with st.spinner("Downloading candles and evaluating the AI Brain..."):
+st.subheader("🌐 All-market signal dashboard")
+st.caption("Scans each configured market using its default signal timeframe. Results are cached for about 55 seconds to limit provider requests. This dashboard displays signals only; automatic paper-position management below still applies to the selected market.")
+with st.spinner("Scanning configured markets..."):
+    all_market_rows = scan_all_market_signals()
+if not all_market_rows.empty:
+    st.dataframe(all_market_rows, use_container_width=True, hide_index=True)
+    ready_count = int(all_market_rows["Data status"].eq("OK").sum())
+    st.caption(f"Markets with usable data: {ready_count}/{len(MARKETS)}. Yahoo Finance may not provide every symbol/timeframe reliably; unavailable data is shown explicitly.")
+else:
+    st.warning("No market scan results are available yet.")
+
+with st.spinner("Downloading selected-market candles and evaluating the AI Brain..."):
     raw = download_data(cfg["symbol"], signal_tf)
     htf = download_data(cfg["symbol"], htf_tf)
     data = add_smc_features(add_adaptive_levels(add_indicators(raw), signal_tf)) if not raw.empty else pd.DataFrame()
@@ -667,7 +756,7 @@ else:
     st.warning(f"WAIT — no setup passed all hard filters. Best-side rule-fit score: {score}/100.")
 
 st.subheader("Automatic paper trading")
-st.caption("Paper trading only: no broker, exchange, wallet, or real-money orders. Start arms the scanner; each scan still requires a button press. This app does not run continuously in the background.")
+st.caption("Paper trading only: no broker, exchange, wallet, or real-money orders. While this page stays open and connected, the selected market is automatically scanned about every 60 seconds when status is RUNNING. Cloud sleep, browser disconnection, and data-provider delays can interrupt scans.")
 status = st.session_state.auto_bot_status
 st.write(f"**Bot status:** `{status}`")
 start_col, pause_col, stop_col = st.columns(3)
@@ -684,13 +773,13 @@ with stop_col:
         st.session_state.auto_bot_status = "STOPPED"
         st.rerun()
 if st.session_state.auto_bot_status == "RUNNING":
-    st.success("Scanner is started. Press Scan to evaluate the latest available candle.")
+    st.success("Scanner is running. It checks automatically on the 60-second refresh while this page remains open; you can also scan manually.")
 elif st.session_state.auto_bot_status == "PAUSED":
     st.warning("Scanner is paused. No new scans will run until you press Start. Existing paper positions remain open and are not automatically managed while paused.")
 else:
     st.info("Scanner is stopped. Existing paper positions remain open; Stop does not close them.")
 
-if st.button("🔎 Scan market & manage paper positions", type="primary", disabled=(st.session_state.auto_bot_status != "RUNNING")):
+def run_selected_market_scan():
     (st.session_state.balance, st.session_state.trades_today,
      st.session_state.auto_daily_start_balance, st.session_state.auto_open_positions,
      auto_events, auto_message) = simulate_auto_paper_scan(
@@ -701,6 +790,18 @@ if st.button("🔎 Scan market & manage paper positions", type="primary", disabl
     )
     st.session_state.last_auto_events = auto_events
     st.session_state.last_auto_message = auto_message
+
+# Run once for each 60-second timer tick while the scanner is armed.
+if st.session_state.auto_bot_status == "RUNNING" and auto_refresh_count > st.session_state.auto_last_refresh_count:
+    st.session_state.auto_last_refresh_count = auto_refresh_count
+    run_selected_market_scan()
+    st.rerun()
+else:
+    # Keep the counter in sync while paused/stopped so restarting doesn't replay old ticks.
+    st.session_state.auto_last_refresh_count = auto_refresh_count
+
+if st.button("🔎 Scan market & manage paper positions now", type="primary", disabled=(st.session_state.auto_bot_status != "RUNNING")):
+    run_selected_market_scan()
     st.rerun()
 
 if st.session_state.get("last_auto_message"):
@@ -749,7 +850,7 @@ with st.expander("AI Brain — condition-by-condition explanation", expanded=Tru
 st.subheader("Candlestick chart — indicators and SMC")
 chart_df = data.tail(180).copy()
 fig = go.Figure(data=[go.Candlestick(x=chart_df.index, open=chart_df["Open"], high=chart_df["High"], low=chart_df["Low"], close=chart_df["Close"], name="Candles")])
-for col, label in [("EMA9","EMA 9"),("EMA21","EMA 21"),("EMA50","EMA 50"),("BB_Upper","BB Upper"),("BB_Mid","BB Middle"),("BB_Lower","BB Lower"),("PowerUpper","Power Upper"),("PowerLower","Power Lower")]:
+for col, label in [("EMA9","EMA 9"),("EMA21","EMA 21"),("EMA50","EMA 50"),("EMA200","EMA 200"),("BB_Upper","BB Upper"),("BB_Mid","BB Middle"),("BB_Lower","BB Lower"),("Support","Support"),("Resistance","Resistance"),("PowerUpper","Power Upper"),("PowerMid","Power Mid"),("PowerLower","Power Lower")]:
     if col in chart_df:
         fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df[col], mode="lines", name=label, connectgaps=False))
 for col, label, symbol in [("BOS_Bull","Bullish BOS","triangle-up"),("CHOCH_Bull","Bullish CHOCH","triangle-up"),("SweepLow","Low Sweep","circle"),("BOS_Bear","Bearish BOS","triangle-down"),("CHOCH_Bear","Bearish CHOCH","triangle-down"),("SweepHigh","High Sweep","circle")]:
@@ -759,7 +860,14 @@ for col, label, symbol in [("BOS_Bull","Bullish BOS","triangle-up"),("CHOCH_Bull
             y = pts["Low"] if "Bull" in col or col == "SweepLow" else pts["High"]
             fig.add_trace(go.Scatter(x=pts.index, y=y, mode="markers", name=label, marker_symbol=symbol, marker_size=9))
 fig.update_layout(height=620, xaxis_rangeslider_visible=False, legend_orientation="h", margin=dict(l=10,r=10,t=30,b=10))
-st.plotly_chart(fig, use_container_width=True)
+# Draw active automatic position levels when they belong to the selected market.
+for pos in st.session_state.auto_open_positions:
+    if pos.get("Market") == market_name:
+        for key, label in [("Entry", "Paper Entry"), ("Stop", "Paper Stop"), ("TP1", "Paper TP1"), ("TP2", "Paper TP2")]:
+            if key in pos:
+                fig.add_hline(y=float(pos[key]), line_dash="dash", annotation_text=label, annotation_position="top left")
+# Re-render after adding trade-level lines.
+st.plotly_chart(fig, use_container_width=True, key="candlestick_chart_with_trade_levels")
 st.caption("SMC markers are algorithmic approximations from OHLC candles; they do not reveal actual institutional orders. Data and indicators can be delayed or incomplete.")
 
 st.subheader("SMC status on latest candle")
