@@ -1,422 +1,854 @@
-import json
-import os
-from datetime import datetime, timezone, date
-from pathlib import Path
-
+import math
+from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 import streamlit as st
 import yfinance as yf
-from streamlit_autorefresh import st_autorefresh
+import plotly.graph_objects as go
+import json
+from pathlib import Path
 
-APP_DIR = Path(__file__).parent
-STATE_FILE = APP_DIR / "paper_state.json"
-STARTING_BALANCE = 100_000.0
-USD_INR_ASSUMPTION = 85.0  # Approximation for simulation only; editable in sidebar.
-RISK_PER_TRADE_PCT = 0.5
-MAX_DAILY_LOSS_PCT = 3.0
-TIMEFRAMES = {"15 minutes": "15m", "30 minutes": "30m", "1 hour": "60m"}
+st.set_page_config(page_title="AI Paper Trading Brain", page_icon="🧠", layout="wide")
+
+# -----------------------------
+# Configuration / data helpers
+# -----------------------------
+STARTING_BALANCE = 100_000.0  # INR virtual balance
 MARKETS = {
-    "Gold": {"XAUUSD=X": "Gold spot proxy (XAUUSD=X)"},
-    "Forex": {
-        "EURUSD=X": "EUR/USD",
-        "GBPUSD=X": "GBP/USD",
-        "USDJPY=X": "USD/JPY",
-        "AUDUSD=X": "AUD/USD",
-    },
-    "Crypto": {
-        "BTC-USD": "Bitcoin (BTC-USD)",
-        "ETH-USD": "Ethereum (ETH-USD)",
-        "SOL-USD": "Solana (SOL-USD)",
-    },
+    "Gold (XAUUSD)": {"symbol": "GC=F", "signal_tf": "5m", "allowed_tfs": ["5m", "15m", "30m", "1h", "4h"], "htf": "4h", "kind": "gold"},
+    "US Oil (WTI proxy)": {"symbol": "CL=F", "signal_tf": "15m", "allowed_tfs": ["15m", "30m", "1h", "4h"], "htf": "4h", "kind": "oil"},
+    "EUR/USD": {"symbol": "EURUSD=X", "signal_tf": "15m", "allowed_tfs": ["15m", "30m", "1h", "4h"], "htf": "4h", "kind": "forex"},
+    "GBP/USD": {"symbol": "GBPUSD=X", "signal_tf": "15m", "allowed_tfs": ["15m", "30m", "1h", "4h"], "htf": "4h", "kind": "forex"},
+    "AUD/USD": {"symbol": "AUDUSD=X", "signal_tf": "15m", "allowed_tfs": ["15m", "30m", "1h", "4h"], "htf": "4h", "kind": "forex"},
+    "USD/JPY": {"symbol": "JPY=X", "signal_tf": "15m", "allowed_tfs": ["15m", "30m", "1h", "4h"], "htf": "4h", "kind": "forex"},
+    "BTC/USD": {"symbol": "BTC-USD", "signal_tf": "15m", "allowed_tfs": ["15m", "30m", "1h", "4h"], "htf": "4h", "kind": "crypto"},
+    "SOL/USD": {"symbol": "SOL-USD", "signal_tf": "15m", "allowed_tfs": ["15m", "30m", "1h", "4h"], "htf": "4h", "kind": "crypto"},
+    "ETH/USD": {"symbol": "ETH-USD", "signal_tf": "15m", "allowed_tfs": ["15m", "30m", "1h", "4h"], "htf": "4h", "kind": "crypto"},
 }
-
-st.set_page_config(page_title="Multi-Market Paper Trading Bot", page_icon="📈", layout="wide")
-
-
-def load_state():
-    if STATE_FILE.exists():
-        try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                state = json.load(f)
-            state.setdefault("balance", STARTING_BALANCE)
-            state.setdefault("open_trades", {})
-            state.setdefault("history", [])
-            state.setdefault("last_entry_bar", {})
-            state.setdefault("day_start_balance", state["balance"])
-            state.setdefault("day", str(date.today()))
-            return state
-        except Exception:
-            pass
-    return {
-        "balance": STARTING_BALANCE,
-        "open_trades": {},
-        "history": [],
-        "last_entry_bar": {},
-        "day_start_balance": STARTING_BALANCE,
-        "day": str(date.today()),
-    }
+INTERVAL_MAP = {"5m": ("5m", "5d"), "15m": ("15m", "60d"), "30m": ("30m", "60d"), "1h": ("60m", "730d"), "4h": ("60m", "730d")}
 
 
-def save_state(state):
-    tmp = STATE_FILE.with_suffix(".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2, default=str)
-    tmp.replace(STATE_FILE)
+TRADE_LOG_PATH = Path("paper_trade_history.csv")
+def persist_trade_log(trades):
+    try:
+        pd.DataFrame(trades).to_csv(TRADE_LOG_PATH, index=False)
+    except Exception:
+        pass
 
+def load_trade_log():
+    try:
+        if TRADE_LOG_PATH.exists():
+            return pd.read_csv(TRADE_LOG_PATH).to_dict(orient="records")
+    except Exception:
+        pass
+    return []
 
-def fetch_bars(symbol, interval, period="30d"):
-    df = yf.download(
-        symbol,
-        period=period,
-        interval=interval,
-        auto_adjust=False,
-        progress=False,
-        threads=False,
-    )
-    if df is None or df.empty:
+def download_data(symbol, interval):
+    yf_interval, period = INTERVAL_MAP[interval]
+    try:
+        df = yf.download(symbol, period=period, interval=yf_interval, auto_adjust=False, progress=False, threads=False)
+        if df is None or df.empty:
+            return pd.DataFrame()
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df = df.rename(columns={c: str(c).title() for c in df.columns})
+        required = ["Open", "High", "Low", "Close"]
+        if not all(c in df.columns for c in required):
+            return pd.DataFrame()
+        if "Volume" not in df.columns:
+            df["Volume"] = 0.0
+        df = df[["Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Open", "High", "Low", "Close"])
+        df = df[~df.index.duplicated(keep="last")].sort_index()
+        if interval == "4h":
+            # Yahoo Finance commonly exposes hourly rather than 4-hour bars; aggregate them.
+            df = df.resample("4h").agg({
+                "Open": "first", "High": "max", "Low": "min",
+                "Close": "last", "Volume": "sum"
+            }).dropna(subset=["Open", "High", "Low", "Close"])
+        return df
+    except Exception:
         return pd.DataFrame()
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    needed = ["Open", "High", "Low", "Close", "Volume"]
-    if any(c not in df.columns for c in needed):
-        return pd.DataFrame()
-    df = df[needed].dropna(subset=["Open", "High", "Low", "Close"])
-    return df
-
 
 def add_indicators(df):
     if df.empty:
         return df
     x = df.copy()
-    close, high, low, volume = x["Close"], x["High"], x["Low"], x["Volume"].fillna(0)
-    for span in (9, 21, 50, 200):
-        x[f"EMA{span}"] = close.ewm(span=span, adjust=False).mean()
-    delta = close.diff()
-    gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
-    loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
-    rs = gain / loss.replace(0, np.nan)
-    x["RSI"] = 100 - (100 / (1 + rs))
-    prev_close = close.shift(1)
-    tr = pd.concat([(high - low), (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
-    x["ATR"] = tr.ewm(alpha=1 / 14, adjust=False).mean()
-    up_move = high.diff()
-    down_move = -low.diff()
-    plus_dm = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0.0), index=x.index)
-    minus_dm = pd.Series(np.where((down_move > up_move) & (down_move > 0), down_move, 0.0), index=x.index)
+    c, h, l, o = x["Close"], x["High"], x["Low"], x["Open"]
+    # RSI using Wilder-style exponentially smoothed average gains/losses.
+    delta = c.diff()
+    gain = delta.clip(lower=0)
+    loss = (-delta.clip(upper=0))
+    avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+    rsi = rsi.where(avg_loss.ne(0), 100.0).where(avg_gain.ne(0) | avg_loss.ne(0), 50.0)
+    x["RSI"] = rsi
+
+    typical = (h + l + c) / 3
+    raw_flow = typical * x["Volume"].fillna(0).clip(lower=0)
+    flow_delta = typical.diff()
+    pos_flow = raw_flow.where(flow_delta > 0, 0).rolling(14, min_periods=14).sum()
+    neg_flow = raw_flow.where(flow_delta < 0, 0).rolling(14, min_periods=14).sum()
+    mfr = pos_flow / neg_flow.replace(0, np.nan)
+    mfi = 100 - (100 / (1 + mfr))
+    mfi = mfi.where(neg_flow.ne(0), 100.0).where(pos_flow.ne(0) | neg_flow.ne(0), 50.0)
+    # When the feed has no usable volume, MFI is not meaningful; mark it unavailable.
+    if x["Volume"].fillna(0).sum() <= 0:
+        mfi[:] = np.nan
+    x["MFI"] = mfi
+
+    x["BB_Mid"] = c.rolling(20, min_periods=20).mean()
+    bb_std = c.rolling(20, min_periods=20).std(ddof=0)
+    x["BB_Upper"] = x["BB_Mid"] + 2.5 * bb_std
+    x["BB_Lower"] = x["BB_Mid"] - 2.5 * bb_std
+
+    prev_close = c.shift(1)
+    tr = pd.concat([(h-l), (h-prev_close).abs(), (l-prev_close).abs()], axis=1).max(axis=1)
+    x["ATR"] = tr.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    up = h.diff()
+    down = -l.diff()
+    plus_dm = up.where((up > down) & (up > 0), 0.0)
+    minus_dm = down.where((down > up) & (down > 0), 0.0)
     atr_safe = x["ATR"].replace(0, np.nan)
-    x["+DI"] = 100 * plus_dm.ewm(alpha=1 / 14, adjust=False).mean() / atr_safe
-    x["-DI"] = 100 * minus_dm.ewm(alpha=1 / 14, adjust=False).mean() / atr_safe
-    dx = 100 * (x["+DI"] - x["-DI"]).abs() / (x["+DI"] + x["-DI"]).replace(0, np.nan)
-    x["ADX"] = dx.ewm(alpha=1 / 14, adjust=False).mean()
-    # Session VWAP approximation: reset by date where the data index has a timezone/session date.
-    typical = (high + low + close) / 3
-    idx = x.index
-    try:
-        session_key = pd.Index(idx.date)
-    except Exception:
-        session_key = pd.Index(pd.to_datetime(idx).date)
-    pv = typical * volume
-    x["VWAP"] = pv.groupby(session_key).cumsum() / volume.groupby(session_key).cumsum().replace(0, np.nan)
-    # Adaptive channel based on a rolling 20-bar mean and standard deviation.
-    x["ChannelMid"] = close.rolling(20, min_periods=10).mean()
-    x["ChannelWidth"] = close.rolling(20, min_periods=10).std() * 2
-    x["ChannelUpper"] = x["ChannelMid"] + x["ChannelWidth"]
-    x["ChannelLower"] = x["ChannelMid"] - x["ChannelWidth"]
-    # Rolling support/resistance and simple swing structure proxies.
-    x["Support"] = low.rolling(20, min_periods=5).min()
-    x["Resistance"] = high.rolling(20, min_periods=5).max()
-    x["PrevSwingHigh"] = high.shift(1).rolling(10, min_periods=5).max()
-    x["PrevSwingLow"] = low.shift(1).rolling(10, min_periods=5).min()
+    plus_sm = plus_dm.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    minus_sm = minus_dm.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    x["PLUS_DI"] = 100 * plus_sm / atr_safe
+    x["MINUS_DI"] = 100 * minus_sm / atr_safe
+    di_sum = (x["PLUS_DI"] + x["MINUS_DI"]).replace(0, np.nan)
+    dx = 100 * (x["PLUS_DI"] - x["MINUS_DI"]).abs() / di_sum
+    x["ADX"] = dx.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+
+    x["EMA9"] = c.ewm(span=9, adjust=False).mean()
+    x["EMA21"] = c.ewm(span=21, adjust=False).mean()
+    x["EMA50"] = c.ewm(span=50, adjust=False).mean()
+    x["EMA200"] = c.ewm(span=200, adjust=False).mean()
+
+    # Approximate intraday VWAP; Yahoo FX/crypto volume can be absent or non-centralized.
+    idx = pd.to_datetime(x.index)
+    session = pd.Series(idx.date, index=x.index)
+    vol = x["Volume"].fillna(0).clip(lower=0)
+    denom = vol.groupby(session).cumsum().replace(0, np.nan)
+    x["VWAP"] = (typical * vol).groupby(session).cumsum() / denom
+    x["VWAP"] = x["VWAP"].fillna(x["BB_Mid"])
+
+    x["VolAvg20"] = x["Volume"].rolling(20).mean()
+    x["RelVol"] = x["Volume"] / x["VolAvg20"].replace(0, np.nan)
+    # Adaptive support/resistance + power channel.
+    # The lookback scales with timeframe: shorter for 5m, longer for higher TFs.
+    # Caller adds timeframe-specific settings via add_adaptive_levels().
+    x["Support"] = x["Low"].rolling(20).min().shift(1)
+    x["Resistance"] = x["High"].rolling(20).max().shift(1)
+    x["PowerMid"] = (x["Support"] + x["Resistance"]) / 2
+    x["PowerWidth"] = (x["Resistance"] - x["Support"])
+    x["PowerUpper"] = x["Resistance"]
+    x["PowerLower"] = x["Support"]
+    # Simple candle reversal patterns.
+    body = (c-o).abs()
+    candle_range = (h-l).replace(0, np.nan)
+    lower_wick = np.minimum(o, c) - l
+    upper_wick = h - np.maximum(o, c)
+    x["BullReversal"] = ((c > o) & ((lower_wick > body * 1.2) | ((c > o.shift(1)) & (o < c.shift(1)) & (c > o.shift(1)))).fillna(False))
+    x["BearReversal"] = ((c < o) & ((upper_wick > body * 1.2) | ((c < o.shift(1)) & (o > c.shift(1)) & (c < o.shift(1)))).fillna(False))
     return x
 
+def adaptive_lookback(interval):
+    """Choose a support/resistance and power-channel lookback by chart timeframe."""
+    return {"5m": 48, "15m": 40, "30m": 36, "1h": 30, "4h": 24}.get(interval, 40)
 
-def score_timeframe(df):
-    if df.empty or len(df) < 205:
-        return {"score": 0, "label": "INSUFFICIENT DATA", "row": None}
-    r = df.iloc[-1]
-    prev = df.iloc[-2]
-    vals = [r.get("EMA9"), r.get("EMA21"), r.get("EMA50"), r.get("EMA200"), r.get("RSI"), r.get("ATR"), r.get("ADX")]
-    if any(pd.isna(v) for v in vals):
-        return {"score": 0, "label": "INSUFFICIENT DATA", "row": r}
-    score = 0
-    score += 1 if r["EMA9"] > r["EMA21"] else -1
-    score += 1 if r["EMA21"] > r["EMA50"] else -1
-    score += 1 if r["EMA50"] > r["EMA200"] else -1
-    score += 1 if r["Close"] > r["VWAP"] else -1 if pd.notna(r["VWAP"]) else 0
-    score += 1 if r["+DI"] > r["-DI"] else -1
-    if r["ADX"] >= 18:
-        score += 1 if r["+DI"] > r["-DI"] else -1
-    # RSI confirmation without chasing extreme readings.
-    if 52 <= r["RSI"] <= 70:
-        score += 1
-    elif 30 <= r["RSI"] <= 48:
-        score -= 1
-    # Structure breakout proxy: close breaks previous rolling swing level.
-    if pd.notna(r["PrevSwingHigh"]) and r["Close"] > r["PrevSwingHigh"]:
-        score += 1
-    elif pd.notna(r["PrevSwingLow"]) and r["Close"] < r["PrevSwingLow"]:
-        score -= 1
-    label = "BUY" if score >= 4 else "SELL" if score <= -4 else "NO TRADE"
-    return {"score": int(score), "label": label, "row": r}
+def add_adaptive_levels(df, interval):
+    """Calculate rolling swing levels and an adaptive power channel for the selected timeframe."""
+    if df.empty:
+        return df
+    x = df.copy()
+    n = adaptive_lookback(interval)
+    # Use prior candles only to avoid using the current candle's own high/low as its level.
+    x["Support"] = x["Low"].rolling(n, min_periods=max(8, n//2)).min().shift(1)
+    x["Resistance"] = x["High"].rolling(n, min_periods=max(8, n//2)).max().shift(1)
+    x["PowerMid"] = (x["Support"] + x["Resistance"]) / 2
+    x["PowerWidth"] = x["Resistance"] - x["Support"]
+    # ATR buffer makes channel boundaries respond to volatility.
+    atr = x["ATR"] if "ATR" in x.columns else pd.Series(np.nan, index=x.index)
+    x["PowerUpper"] = x["Resistance"] + 0.25 * atr
+    x["PowerLower"] = x["Support"] - 0.25 * atr
+    x["NearSupport"] = x["Close"] <= (x["Support"] + 0.35 * atr)
+    x["NearResistance"] = x["Close"] >= (x["Resistance"] - 0.35 * atr)
+    return x
 
+def add_smc_features(df):
+    """Rule-based SMC approximations. These are price-action proxies, not verified institutional order data."""
+    if df.empty:
+        return df
+    x = df.copy()
+    # Confirmed swing levels are shifted so current candle does not define its own reference.
+    swing_n = 3
+    x["SwingHigh"] = x["High"].rolling(2*swing_n+1, center=True).max().where(
+        x["High"].eq(x["High"].rolling(2*swing_n+1, center=True).max())).shift(swing_n)
+    x["SwingLow"] = x["Low"].rolling(2*swing_n+1, center=True).min().where(
+        x["Low"].eq(x["Low"].rolling(2*swing_n+1, center=True).min())).shift(swing_n)
+    prev_swing_high = x["SwingHigh"].ffill().shift(1)
+    prev_swing_low = x["SwingLow"].ffill().shift(1)
+    x["BOS_Bull"] = (x["Close"] > prev_swing_high) & prev_swing_high.notna()
+    x["BOS_Bear"] = (x["Close"] < prev_swing_low) & prev_swing_low.notna()
+    # CHOCH proxy: close crosses a swing level against the prior candle's local direction.
+    x["CHOCH_Bull"] = x["BOS_Bull"] & (x["Close"].shift(1) <= prev_swing_high)
+    x["CHOCH_Bear"] = x["BOS_Bear"] & (x["Close"].shift(1) >= prev_swing_low)
+    # Three-candle fair value gap proxy.
+    x["FVG_Bull"] = x["Low"] > x["High"].shift(2)
+    x["FVG_Bear"] = x["High"] < x["Low"].shift(2)
+    x["FVG_Bull_Lower"] = x["High"].shift(2)
+    x["FVG_Bull_Upper"] = x["Low"]
+    x["FVG_Bear_Lower"] = x["High"]
+    x["FVG_Bear_Upper"] = x["Low"].shift(2)
+    # Liquidity sweep: wick crosses a prior swing and close returns inside.
+    x["SweepLow"] = (x["Low"] < prev_swing_low) & (x["Close"] > prev_swing_low) & prev_swing_low.notna()
+    x["SweepHigh"] = (x["High"] > prev_swing_high) & (x["Close"] < prev_swing_high) & prev_swing_high.notna()
+    # Order-block proxy: last opposite candle before a structure break, carried forward briefly.
+    bull_ob_low = pd.Series(np.nan, index=x.index); bull_ob_high = pd.Series(np.nan, index=x.index)
+    bear_ob_low = pd.Series(np.nan, index=x.index); bear_ob_high = pd.Series(np.nan, index=x.index)
+    for i in range(2, len(x)):
+        if bool(x["BOS_Bull"].iloc[i]):
+            candidates = [j for j in range(max(0, i-5), i) if x["Close"].iloc[j] < x["Open"].iloc[j]]
+            if candidates:
+                j = candidates[-1]; bull_ob_low.iloc[i] = x["Low"].iloc[j]; bull_ob_high.iloc[i] = x["High"].iloc[j]
+        if bool(x["BOS_Bear"].iloc[i]):
+            candidates = [j for j in range(max(0, i-5), i) if x["Close"].iloc[j] > x["Open"].iloc[j]]
+            if candidates:
+                j = candidates[-1]; bear_ob_low.iloc[i] = x["Low"].iloc[j]; bear_ob_high.iloc[i] = x["High"].iloc[j]
+    x["BullOB_Low"] = bull_ob_low.ffill(limit=20); x["BullOB_High"] = bull_ob_high.ffill(limit=20)
+    x["BearOB_Low"] = bear_ob_low.ffill(limit=20); x["BearOB_High"] = bear_ob_high.ffill(limit=20)
+    x["InBullOB"] = x["Close"].between(x["BullOB_Low"], x["BullOB_High"])
+    x["InBearOB"] = x["Close"].between(x["BearOB_Low"], x["BearOB_High"])
+    # Premium/discount based on prior rolling dealing range.
+    range_high = x["High"].rolling(50, min_periods=20).max().shift(1)
+    range_low = x["Low"].rolling(50, min_periods=20).min().shift(1)
+    x["DealingMid"] = (range_high + range_low) / 2
+    x["Discount"] = x["Close"] < x["DealingMid"]
+    x["Premium"] = x["Close"] > x["DealingMid"]
+    return x
 
-def make_signal(frames):
-    scored = {tf: score_timeframe(df) for tf, df in frames.items()}
-    labels = [v["label"] for v in scored.values()]
-    # Require all three timeframes to agree to avoid weak/mixed entries.
-    if labels == ["BUY", "BUY", "BUY"]:
-        direction = "BUY"
-    elif labels == ["SELL", "SELL", "SELL"]:
-        direction = "SELL"
-    else:
-        direction = "NO TRADE"
-    base = scored["15 minutes"]["row"]
-    if direction == "NO TRADE" or base is None:
-        return direction, scored, None
-    price = float(base["Close"])
-    atr = float(base["ATR"])
-    if not np.isfinite(price) or not np.isfinite(atr) or atr <= 0:
-        return "NO TRADE", scored, None
-    stop_dist = max(1.5 * atr, price * 0.0005)
-    if direction == "BUY":
-        sl, t1, t2 = price - stop_dist, price + stop_dist, price + 2 * stop_dist
-    else:
-        sl, t1, t2 = price + stop_dist, price - stop_dist, price - 2 * stop_dist
-    # Avoid entering too close to an obvious rolling S/R level; this is a heuristic.
-    support, resistance = base.get("Support"), base.get("Resistance")
-    if direction == "BUY" and pd.notna(resistance) and (float(resistance) - price) < 0.5 * stop_dist:
-        return "NO TRADE", scored, None
-    if direction == "SELL" and pd.notna(support) and (price - float(support)) < 0.5 * stop_dist:
-        return "NO TRADE", scored, None
-    return direction, scored, {"entry": price, "sl": float(sl), "t1": float(t1), "t2": float(t2), "atr": atr}
+def htf_bias(htf):
+    if htf.empty or len(htf) < 205:
+        return "Unknown", None
+    h = add_indicators(htf)
+    last = h.iloc[-1]
+    if last["Close"] > last["EMA50"] and last["Close"] > last["EMA200"]:
+        return "Bullish", last
+    if last["Close"] < last["EMA50"] and last["Close"] < last["EMA200"]:
+        return "Bearish", last
+    return "Mixed", last
 
-
-def close_trade(state, symbol, trade, exit_price, reason, usd_inr):
-    remaining_qty = float(trade.get("remaining_qty", trade["qty"]))
-    pnl_quote = (exit_price - trade["entry"]) * remaining_qty
-    if trade["side"] == "SELL":
-        pnl_quote = -pnl_quote
-    pnl_inr = pnl_quote * usd_inr
-    state["balance"] += pnl_inr
-    state["history"].append({
-        "closed_at": datetime.now(timezone.utc).isoformat(),
-        "symbol": symbol,
-        "side": trade["side"],
-        "entry": trade["entry"],
-        "exit": float(exit_price),
-        "qty_remaining": remaining_qty,
-        "pnl_inr": round(pnl_inr, 2),
-        "reason": reason,
-    })
-    state["open_trades"].pop(symbol, None)
-
-
-def update_paper_trade(state, symbol, bar, usd_inr):
-    trade = state["open_trades"].get(symbol)
-    if not trade:
-        return
-    high, low = float(bar["High"]), float(bar["Low"])
-    side = trade["side"]
-    # Conservative assumption: if SL and TP are both touched in one candle, assume SL first.
-    if side == "BUY":
-        if low <= trade["sl"]:
-            close_trade(state, symbol, trade, trade["sl"], "STOP LOSS", usd_inr)
-            return
-        if not trade.get("t1_hit") and high >= trade["t1"]:
-            qty_close = trade["qty"] * 0.5
-            pnl = (trade["t1"] - trade["entry"]) * qty_close * usd_inr
-            state["balance"] += pnl
-            trade["remaining_qty"] = trade["qty"] - qty_close
-            trade["t1_hit"] = True
-            state["history"].append({"closed_at": datetime.now(timezone.utc).isoformat(), "symbol": symbol, "side": side, "entry": trade["entry"], "exit": trade["t1"], "qty_remaining": qty_close, "pnl_inr": round(pnl, 2), "reason": "TARGET 1 (PARTIAL)"})
-        if symbol in state["open_trades"] and high >= trade["t2"]:
-            close_trade(state, symbol, trade, trade["t2"], "TARGET 2", usd_inr)
-    else:
-        if high >= trade["sl"]:
-            close_trade(state, symbol, trade, trade["sl"], "STOP LOSS", usd_inr)
-            return
-        if not trade.get("t1_hit") and low <= trade["t1"]:
-            qty_close = trade["qty"] * 0.5
-            pnl = (trade["entry"] - trade["t1"]) * qty_close * usd_inr
-            state["balance"] += pnl
-            trade["remaining_qty"] = trade["qty"] - qty_close
-            trade["t1_hit"] = True
-            state["history"].append({"closed_at": datetime.now(timezone.utc).isoformat(), "symbol": symbol, "side": side, "entry": trade["entry"], "exit": trade["t1"], "qty_remaining": qty_close, "pnl_inr": round(pnl, 2), "reason": "TARGET 1 (PARTIAL)"})
-        if symbol in state["open_trades"] and low <= trade["t2"]:
-            close_trade(state, symbol, trade, trade["t2"], "TARGET 2", usd_inr)
-
-
-def open_paper_trade(state, symbol, direction, levels, usd_inr):
-    risk_inr = max(0.0, state["balance"] * RISK_PER_TRADE_PCT / 100)
-    stop_distance = abs(levels["entry"] - levels["sl"])
-    if risk_inr <= 0 or stop_distance <= 0:
-        return False
-    qty = risk_inr / (stop_distance * usd_inr)
-    if not np.isfinite(qty) or qty <= 0:
-        return False
-    state["open_trades"][symbol] = {
-        "side": direction,
-        "entry": levels["entry"],
-        "sl": levels["sl"],
-        "t1": levels["t1"],
-        "t2": levels["t2"],
-        "qty": qty,
-        "remaining_qty": qty,
-        "t1_hit": False,
-        "opened_at": datetime.now(timezone.utc).isoformat(),
+def score_signal(last, bias, threshold=78, use_smc=True):
+    """Rule-fit score; not a probability. SMC signals are explicit price-action proxies."""
+    def val(key, default=False):
+        v = last.get(key, default)
+        return bool(v) if pd.notna(v) else False
+    long_checks = {
+        "RSI oversold (<25)": last["RSI"] < 25,
+        "MFI oversold (<20)": pd.notna(last.get("MFI", np.nan)) and last["MFI"] < 20,
+        "Close below lower Bollinger Band": last["Close"] < last["BB_Lower"],
+        "Relative volume >= 1.5": pd.notna(last["RelVol"]) and last["RelVol"] >= 1.5,
+        "ADX range filter (<25)": pd.notna(last["ADX"]) and last["ADX"] < 25,
+        "HTF bullish": bias == "Bullish",
+        "EMA9 > EMA21": last["EMA9"] > last["EMA21"],
+        "+DI > -DI": pd.notna(last.get("PLUS_DI", np.nan)) and pd.notna(last.get("MINUS_DI", np.nan)) and last["PLUS_DI"] > last["MINUS_DI"],
+        "Below VWAP": last["Close"] < last["VWAP"],
+        "Near support": pd.notna(last.get("Support", np.nan)) and last["Close"] <= last["Support"] + 0.35 * last["ATR"],
+        "Bullish reversal candle": val("BullReversal"),
+        "Bullish BOS/CHOCH": val("BOS_Bull") or val("CHOCH_Bull"),
+        "Low liquidity sweep": val("SweepLow"),
+        "Bullish order block": val("InBullOB"),
+        "Bullish FVG": val("FVG_Bull"),
+        "Discount zone": val("Discount"),
     }
-    return True
+    short_checks = {
+        "RSI overbought (>75)": last["RSI"] > 75,
+        "MFI overbought (>80)": pd.notna(last.get("MFI", np.nan)) and last["MFI"] > 80,
+        "Close above upper Bollinger Band": last["Close"] > last["BB_Upper"],
+        "Relative volume >= 1.5": pd.notna(last["RelVol"]) and last["RelVol"] >= 1.5,
+        "ADX range filter (<25)": pd.notna(last["ADX"]) and last["ADX"] < 25,
+        "HTF bearish": bias == "Bearish",
+        "EMA9 < EMA21": last["EMA9"] < last["EMA21"],
+        "-DI > +DI": pd.notna(last.get("PLUS_DI", np.nan)) and pd.notna(last.get("MINUS_DI", np.nan)) and last["MINUS_DI"] > last["PLUS_DI"],
+        "Above VWAP": last["Close"] > last["VWAP"],
+        "Near resistance": pd.notna(last.get("Resistance", np.nan)) and last["Close"] >= last["Resistance"] - 0.35 * last["ATR"],
+        "Bearish reversal candle": val("BearReversal"),
+        "Bearish BOS/CHOCH": val("BOS_Bear") or val("CHOCH_Bear"),
+        "High liquidity sweep": val("SweepHigh"),
+        "Bearish order block": val("InBearOB"),
+        "Bearish FVG": val("FVG_Bear"),
+        "Premium zone": val("Premium"),
+    }
+    if not use_smc:
+        smc_keys = {"Bullish BOS/CHOCH", "Low liquidity sweep", "Bullish order block", "Bullish FVG", "Discount zone", "Bearish BOS/CHOCH", "High liquidity sweep", "Bearish order block", "Bearish FVG", "Premium zone"}
+        long_checks = {k: v for k, v in long_checks.items() if k not in smc_keys}
+        short_checks = {k: v for k, v in short_checks.items() if k not in smc_keys}
+    # Category-weighted score, capped at 100; normalize active categories for fair A/B comparison.
+    weights = {
+        "RSI oversold (<25)": 5, "MFI oversold (<20)": 5, "Close below lower Bollinger Band": 8,
+        "Relative volume >= 1.5": 5, "ADX range filter (<25)": 5, "HTF bullish": 10,
+        "EMA9 > EMA21": 5, "+DI > -DI": 5, "Below VWAP": 4, "Near support": 7,
+        "Bullish reversal candle": 5, "Bullish BOS/CHOCH": 10, "Low liquidity sweep": 8,
+        "Bullish order block": 5, "Bullish FVG": 5, "Discount zone": 8,
+        "RSI overbought (>75)": 5, "MFI overbought (>80)": 5, "Close above upper Bollinger Band": 8,
+        "HTF bearish": 10, "EMA9 < EMA21": 5, "-DI > +DI": 5, "Above VWAP": 4, "Near resistance": 7,
+        "Bearish reversal candle": 5, "Bearish BOS/CHOCH": 10, "High liquidity sweep": 8,
+        "Bearish order block": 5, "Bearish FVG": 5, "Premium zone": 8,
+    }
+    active_long_max = sum(weights[k] for k in long_checks) or 1
+    active_short_max = sum(weights[k] for k in short_checks) or 1
+    long_score = min(100, round(100 * sum(weights[k] for k,v in long_checks.items() if v) / active_long_max))
+    short_score = min(100, round(100 * sum(weights[k] for k,v in short_checks.items() if v) / active_short_max))
+    # Avoid requiring every rare SMC event; require at least one structure/liquidity confirmation.
+    long_smc = val("BOS_Bull") or val("CHOCH_Bull") or val("SweepLow") or val("InBullOB") or val("FVG_Bull")
+    short_smc = val("BOS_Bear") or val("CHOCH_Bear") or val("SweepHigh") or val("InBearOB") or val("FVG_Bear")
+    long_hard = bias != "Bullish" or not (last["ADX"] < 25) or not (last["Close"] < last["BB_Lower"]) or (use_smc and not long_smc)
+    short_hard = bias != "Bearish" or not (last["ADX"] < 25) or not (last["Close"] > last["BB_Upper"]) or (use_smc and not short_smc)
+    if not long_hard and long_score >= threshold:
+        return "BUY", int(long_score), long_checks
+    if not short_hard and short_score >= threshold:
+        return "SELL", int(short_score), short_checks
+    return "WAIT", int(max(long_score, short_score)), long_checks if long_score >= short_score else short_checks
 
 
-st.title("📈 Multi-Market AI-Assisted Paper Trading Bot")
-st.caption("Mobile-friendly research prototype • Virtual money only • No broker orders or wallet connection")
+def make_trade_levels(last, side, risk_pct, rr2):
+    entry = float(last["Close"])
+    atr = float(last["ATR"])
+    if not np.isfinite(atr) or atr <= 0:
+        return None
+    # Protective stop uses signal candle + ATR buffer; choose wider of the two.
+    if side == "BUY":
+        stop = min(float(last["Low"]), entry - 1.2 * atr)
+        risk = entry - stop
+        tp1 = min(float(last["BB_Mid"]), entry + 0.9 * risk) if pd.notna(last["BB_Mid"]) else entry + 0.9*risk
+        tp2_candidates = [entry + rr2*risk]
+        if pd.notna(last["BB_Upper"]):
+            tp2_candidates.append(float(last["BB_Upper"]))
+        if pd.notna(last["Resistance"]):
+            tp2_candidates.append(float(last["Resistance"]))
+        tp2 = min([v for v in tp2_candidates if v > entry] or [entry + rr2*risk])
+    else:
+        stop = max(float(last["High"]), entry + 1.2 * atr)
+        risk = stop - entry
+        tp1 = max(float(last["BB_Mid"]), entry - 0.9 * risk) if pd.notna(last["BB_Mid"]) else entry - 0.9*risk
+        tp2_candidates = [entry - rr2*risk]
+        if pd.notna(last["BB_Lower"]):
+            tp2_candidates.append(float(last["BB_Lower"]))
+        if pd.notna(last["Support"]):
+            tp2_candidates.append(float(last["Support"]))
+        tp2 = max([v for v in tp2_candidates if v < entry] or [entry - rr2*risk])
+    return {"entry": entry, "stop": stop, "tp1": tp1, "tp2": tp2, "risk_per_unit": abs(entry-stop)}
 
+
+def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, threshold,
+                             risk_pct, rr2, balance, trades_today, max_trades_per_day,
+                             daily_start_balance, max_daily_loss_pct, open_positions):
+    """
+    Process the latest CLOSED candle once per market/timeframe, update exits for existing
+    simulated positions, and open at most one new paper position per scan.
+    Price-distance sizing is an approximation, not broker contract-aware sizing.
+    """
+    events = []
+    if data.empty or len(data) < 60:
+        return balance, trades_today, daily_start_balance, open_positions, events, "Insufficient candle history."
+
+    d = data.copy()
+    # Use the last candle as latest available; live feeds may still include an unfinished candle.
+    last = d.iloc[-1]
+    bar_time = str(d.index[-1])
+    market_key = f"{market_name}|{timeframe}"
+    processed = st.session_state.get("auto_last_processed", {})
+    if market_key in processed and processed[market_key] == bar_time:
+        # Still manage existing positions on a repeated scan of the same bar only if prices changed?
+        # Skip duplicate processing so a repeated click cannot double-count a candle.
+        return balance, trades_today, daily_start_balance, open_positions, events, "Latest candle already processed; no duplicate trade."
+
+    # Manage open positions for this market using the newest bar's OHLC.
+    bar = last
+    still_open = []
+    for pos in open_positions:
+        if pos["Market"] != market_name:
+            still_open.append(pos)
+            continue
+        side = pos["Side"]
+        stop_hit = (bar["Low"] <= pos["Stop"]) if side == "BUY" else (bar["High"] >= pos["Stop"])
+        tp1_hit = (bar["High"] >= pos["TP1"]) if side == "BUY" else (bar["Low"] <= pos["TP1"])
+        tp2_hit = (bar["High"] >= pos["TP2"]) if side == "BUY" else (bar["Low"] <= pos["TP2"])
+        # Conservative bar logic: if stop and a target are touched in the same candle, stop first.
+        if stop_hit:
+            qty = pos["Qty"]
+            if pos["TP1_Hit"]:
+                pnl = pos["RealizedPnL"] + ((pos["Stop"]-pos["Entry"]) if side=="BUY" else (pos["Entry"]-pos["Stop"])) * qty * 0.4
+            else:
+                pnl = ((pos["Stop"]-pos["Entry"]) if side=="BUY" else (pos["Entry"]-pos["Stop"])) * qty
+            balance += pnl
+            events.append(f"Closed {side} {market_name} at stop-loss; estimated paper P&L {pnl:.2f} price-units.")
+            continue
+        if tp1_hit and not pos["TP1_Hit"]:
+            qty = pos["Qty"]
+            partial = ((pos["TP1"]-pos["Entry"]) if side=="BUY" else (pos["Entry"]-pos["TP1"])) * qty * 0.6
+            pos["RealizedPnL"] += partial
+            pos["TP1_Hit"] = True
+            pos["Stop"] = pos["Entry"]  # move stop to break-even
+            events.append(f"TP1 hit on {market_name}; simulated 60% close and stop moved to break-even.")
+        if tp2_hit:
+            qty = pos["Qty"]
+            pnl = pos["RealizedPnL"] + ((pos["TP2"]-pos["Entry"]) if side=="BUY" else (pos["Entry"]-pos["TP2"])) * qty * 0.4
+            if not pos["TP1_Hit"]:
+                # If TP2 is reached without TP1 being recorded in this bar, still model TP1 then TP2.
+                partial = ((pos["TP1"]-pos["Entry"]) if side=="BUY" else (pos["Entry"]-pos["TP1"])) * qty * 0.6
+                pnl = partial + ((pos["TP2"]-pos["Entry"]) if side=="BUY" else (pos["Entry"]-pos["TP2"])) * qty * 0.4
+            balance += pnl
+            events.append(f"TP2 hit on {market_name}; position closed, estimated paper P&L {pnl:.2f} price-units.")
+            continue
+        still_open.append(pos)
+    open_positions = still_open
+
+    # Reset daily risk baseline when the date changes.
+    today = datetime.now().date().isoformat()
+    daily_state = st.session_state.get("auto_daily_state", {})
+    if daily_state.get("date") != today:
+        daily_start_balance = balance
+        trades_today = 0
+        daily_state = {"date": today}
+        st.session_state.auto_daily_state = daily_state
+
+    daily_loss_pct = (daily_start_balance - balance) / max(daily_start_balance, 1) * 100
+    if daily_loss_pct >= max_daily_loss_pct:
+        events.append("Daily loss limit reached; automatic paper entries paused.")
+        processed[market_key] = bar_time
+        st.session_state.auto_last_processed = processed
+        return balance, trades_today, daily_start_balance, open_positions, events, "Daily loss limit reached."
+
+    if trades_today >= max_trades_per_day:
+        events.append("Daily maximum trade count reached; no new entry opened.")
+        processed[market_key] = bar_time
+        st.session_state.auto_last_processed = processed
+        return balance, trades_today, daily_start_balance, open_positions, events, "Daily trade cap reached."
+
+    if any(p["Market"] == market_name for p in open_positions):
+        events.append("An open simulated position already exists for this market; no duplicate entry.")
+        processed[market_key] = bar_time
+        st.session_state.auto_last_processed = processed
+        return balance, trades_today, daily_start_balance, open_positions, events, "Position already open for this market."
+
+    side, score, checks = score_signal(last, bias, threshold)
+    if side in ("BUY", "SELL"):
+        levels = make_trade_levels(last, side, risk_pct, rr2)
+        if levels:
+            entry = float(last["Close"])
+            stop = float(levels["stop"])
+            # Re-anchor levels to the signal close for the simulator.
+            risk_unit = abs(entry - stop)
+            if risk_unit > 0:
+                risk_cash = balance * risk_pct / 100
+                qty = risk_cash / risk_unit
+                if side == "BUY":
+                    tp1 = min(float(last["BB_Mid"]), entry + 0.9*risk_unit) if pd.notna(last["BB_Mid"]) else entry + 0.9*risk_unit
+                    tp2_candidates = [entry + rr2*risk_unit]
+                    if pd.notna(last.get("BB_Upper", np.nan)): tp2_candidates.append(float(last["BB_Upper"]))
+                    if pd.notna(last.get("Resistance", np.nan)): tp2_candidates.append(float(last["Resistance"]))
+                    tp2 = min([v for v in tp2_candidates if v > entry] or [entry + rr2*risk_unit])
+                else:
+                    tp1 = max(float(last["BB_Mid"]), entry - 0.9*risk_unit) if pd.notna(last["BB_Mid"]) else entry - 0.9*risk_unit
+                    tp2_candidates = [entry - rr2*risk_unit]
+                    if pd.notna(last.get("BB_Lower", np.nan)): tp2_candidates.append(float(last["BB_Lower"]))
+                    if pd.notna(last.get("Support", np.nan)): tp2_candidates.append(float(last["Support"]))
+                    tp2 = max([v for v in tp2_candidates if v < entry] or [entry - rr2*risk_unit])
+                pos = {
+                    "Opened": datetime.now().isoformat(timespec="seconds"), "Market": market_name,
+                    "Symbol": symbol, "Timeframe": timeframe, "Side": side, "Score": score,
+                    "Entry": entry, "Stop": stop, "InitialStop": stop, "TP1": tp1, "TP2": tp2,
+                    "Qty": qty, "RiskBudget": risk_cash, "TP1_Hit": False, "RealizedPnL": 0.0,
+                    "Status": "OPEN"
+                }
+                open_positions.append(pos)
+                trades_today += 1
+                events.append(f"Automatically opened paper {side} on {market_name} at {entry:.5f} (score {score}/100).")
+            else:
+                events.append("Signal rejected: stop distance was zero.")
+    else:
+        events.append(f"No entry: setup did not pass the hard filters (rule-fit score {score}/100).")
+
+    processed[market_key] = bar_time
+    st.session_state.auto_last_processed = processed
+    return balance, trades_today, daily_start_balance, open_positions, events, "Scan complete."
+
+def run_backtest(df, htf, timeframe, htf_timeframe, threshold, risk_pct, rr2, starting_balance, max_daily_loss_pct, cost_bps=2.0, use_smc=True):
+    # Simple candle-close signal backtest; next-bar open entry avoids same-close lookahead.
+    # Bar-level stop/target ordering is conservative: if stop and target both touched, stop wins.
+    if len(df) < 250:
+        return pd.DataFrame(), starting_balance, "Need at least 250 bars for a useful backtest."
+    d = add_smc_features(add_adaptive_levels(add_indicators(df), timeframe))
+    ht = add_smc_features(add_adaptive_levels(add_indicators(htf), htf_timeframe)) if not htf.empty else pd.DataFrame()
+    if ht.empty:
+        return pd.DataFrame(), starting_balance, "Higher-timeframe data unavailable."
+    trades = []
+    balance = starting_balance
+    day_start_balance = balance
+    current_day = None
+    cooldown_until = -1
+    for i in range(220, len(d)-1):
+        row = d.iloc[i]
+        ts = d.index[i]
+        day = pd.Timestamp(ts).date()
+        if current_day != day:
+            current_day, day_start_balance = day, balance
+        if (day_start_balance - balance) / max(day_start_balance, 1) >= max_daily_loss_pct/100:
+            continue
+        if i < cooldown_until:
+            continue
+        hslice = ht.loc[ht.index <= ts]
+        if len(hslice) < 205:
+            continue
+        bias, _ = htf_bias(hslice.tail(500))
+        if not all(pd.notna(row.get(k, np.nan)) for k in ["ATR","BB_Mid","BB_Lower","BB_Upper","ADX","RSI","MFI"]):
+            continue
+        side, score, _ = score_signal(row, bias, threshold, use_smc=use_smc)
+        if side not in ("BUY","SELL"):
+            continue
+        levels = make_trade_levels(row, side, risk_pct, rr2)
+        if not levels:
+            continue
+        nxt = d.iloc[i+1]
+        entry = float(nxt["Open"])
+        # Re-anchor levels to next-bar entry, preserving stop distance.
+        if side == "BUY":
+            stop = min(levels["stop"], entry - 0.5*levels["risk_per_unit"])
+            risk_unit = entry-stop
+            tp1 = entry + 0.9*risk_unit
+            tp2 = entry + rr2*risk_unit
+        else:
+            stop = max(levels["stop"], entry + 0.5*levels["risk_per_unit"])
+            risk_unit = stop-entry
+            tp1 = entry - 0.9*risk_unit
+            tp2 = entry - rr2*risk_unit
+        risk_cash = balance * risk_pct/100
+        qty = risk_cash / max(risk_unit, 1e-9)
+        outcome = None
+        exit_price = None
+        exit_time = None
+        partial_pnl = 0.0
+        for j in range(i+1, min(i+97, len(d))):
+            bar = d.iloc[j]
+            if side == "BUY":
+                stop_hit = bar["Low"] <= stop
+                tp1_hit = bar["High"] >= tp1
+                tp2_hit = bar["High"] >= tp2
+            else:
+                stop_hit = bar["High"] >= stop
+                tp1_hit = bar["Low"] <= tp1
+                tp2_hit = bar["Low"] <= tp2
+            if stop_hit:
+                # Conservative handling: stop wins if both are touched in one bar.
+                exit_price, exit_time, outcome = stop, d.index[j], "SL"
+                pnl = partial_pnl + ((exit_price-entry) if side=="BUY" else (entry-exit_price))*qty*0.4
+                break
+            if tp1_hit and partial_pnl == 0.0:
+                partial_pnl = ((tp1-entry) if side=="BUY" else (entry-tp1))*qty*0.6
+                stop = entry  # simulated break-even after TP1
+            if tp2_hit:
+                exit_price, exit_time, outcome = tp2, d.index[j], "TP2"
+                pnl = partial_pnl + ((exit_price-entry) if side=="BUY" else (entry-exit_price))*qty*0.4
+                break
+        else:
+            j = min(i+96, len(d)-1)
+            exit_price, exit_time, outcome = float(d.iloc[j]["Close"]), d.index[j], "TIME"
+            pnl = ((exit_price-entry) if side=="BUY" else (entry-exit_price))*qty
+        # Simple round-trip cost estimate in basis points of entry price; adjust in settings for your venue.
+        cost = abs(entry) * (cost_bps / 10000.0) * qty
+        pnl -= cost
+        balance += pnl
+        trades.append({"Entry time": d.index[i+1], "Exit time": exit_time, "Side": side, "Score": score,
+                       "Entry": entry, "Stop": stop, "TP1": tp1, "TP2": tp2, "Exit": exit_price,
+                       "Outcome": outcome, "PnL (price units)": pnl, "Balance": balance})
+        cooldown_until = j + 1
+    t = pd.DataFrame(trades)
+    return t, balance, None
+
+# -----------------------------
+# UI
+# -----------------------------
+st.title("🧠 AI Brain — Paper Trading Lab")
+st.caption("Rule-based confidence scoring + multi-timeframe filters + automatic simulated trade entry/exit. Paper trading only; no broker, wallet, or live-order connection.")
 with st.sidebar:
-    st.header("Settings")
-    usd_inr = st.number_input("USD → INR simulation rate", min_value=1.0, max_value=200.0, value=USD_INR_ASSUMPTION, step=0.5, help="Approximation used only to translate simulated quote-currency P/L into INR. Not a live FX conversion.")
-    refresh_seconds = st.select_slider("Refresh while page is open", options=[30, 60, 120, 300], value=60, format_func=lambda x: f"{x} seconds")
-    risk_pct = st.select_slider("Risk per new trade", options=[0.25, 0.5, 0.75, 1.0], value=RISK_PER_TRADE_PCT, format_func=lambda x: f"{x}% of balance")
-    st.markdown("**Starting balance:** ₹1,00,000")
-    st.markdown("**Timeframes:** 15m · 30m · 1h")
-    reset = st.button("Reset virtual account", type="secondary")
+    st.header("Bot settings")
+    market_name = st.selectbox("Market", list(MARKETS.keys()))
+    cfg = MARKETS[market_name]
+    allowed_tfs = cfg["allowed_tfs"]
+    default_tf = cfg["signal_tf"]
+    signal_tf = st.selectbox("Signal timeframe", allowed_tfs, index=allowed_tfs.index(default_tf))
+    htf_tf = st.selectbox("Higher-timeframe filter", ["1h","4h"], index=1)
+    score_threshold = st.slider("Minimum rule-fit score", 50, 95, 78, 1)
+    risk_pct = st.slider("Risk per trade (%)", 0.25, 1.0, 0.5, 0.25)
+    max_daily_loss = st.slider("Daily loss stop (%)", 1.0, 3.0, 2.0, 0.5)
+    max_trades_per_day = st.slider("Maximum paper trades per day", 1, 30, 20, 1)
+    rr2 = st.slider("TP2 risk/reward", 1.5, 2.5, 2.0, 0.1)
+    st.caption("Score is not a win probability. Test before relying on it.")
 
-if reset:
-    state = {"balance": STARTING_BALANCE, "open_trades": {}, "history": [], "last_entry_bar": {}, "day_start_balance": STARTING_BALANCE, "day": str(date.today())}
-    save_state(state)
-    st.success("Virtual account reset to ₹1,00,000.")
+if "balance" not in st.session_state:
+    st.session_state.balance = STARTING_BALANCE
+if "trades" not in st.session_state:
+    st.session_state.trades = load_trade_log()
+if "daily_start" not in st.session_state:
+    st.session_state.daily_start = STARTING_BALANCE
+if "daily_date" not in st.session_state:
+    st.session_state.daily_date = datetime.now().date()
+if "halted" not in st.session_state:
+    st.session_state.halted = False
+if "trade_day" not in st.session_state:
+    st.session_state.trade_day = datetime.now().date().isoformat()
+if "trades_today" not in st.session_state:
+    st.session_state.trades_today = 0
+if "auto_open_positions" not in st.session_state:
+    st.session_state.auto_open_positions = []
+if "auto_closed_trades" not in st.session_state:
+    st.session_state.auto_closed_trades = []
+if "auto_last_processed" not in st.session_state:
+    st.session_state.auto_last_processed = {}
+if "auto_daily_start_balance" not in st.session_state:
+    st.session_state.auto_daily_start_balance = st.session_state.balance
+if "auto_bot_status" not in st.session_state:
+    st.session_state.auto_bot_status = "STOPPED"
+
+today_key = datetime.now().date().isoformat()
+if st.session_state.trade_day != today_key:
+    st.session_state.trade_day = today_key
+    st.session_state.trades_today = 0
+    st.session_state.daily_start = st.session_state.balance
+    st.session_state.halted = False
+
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Virtual balance", f"₹{st.session_state.balance:,.2f}")
+col2.metric("Paper trades today", f"{st.session_state.trades_today}/{max_trades_per_day}")
+col3.metric("Daily loss stop", f"{max_daily_loss:.1f}%")
+col4.metric("Risk per setup", f"{risk_pct:.2f}%")
+
+if st.button("🔄 Refresh market data", type="primary"):
+    st.cache_data.clear()
+
+with st.spinner("Downloading candles and evaluating the AI Brain..."):
+    raw = download_data(cfg["symbol"], signal_tf)
+    htf = download_data(cfg["symbol"], htf_tf)
+    data = add_smc_features(add_adaptive_levels(add_indicators(raw), signal_tf)) if not raw.empty else pd.DataFrame()
+    htf = add_smc_features(add_adaptive_levels(add_indicators(htf), htf_tf)) if not htf.empty else htf
+    bias, htf_last = htf_bias(htf) if not htf.empty else ("Unknown", None)
+
+if data.empty or len(data) < 60:
+    st.error("Market data is unavailable or too short from Yahoo Finance right now. Try Refresh, another symbol, or another timeframe.")
+    st.info("Yahoo Finance intraday data can be delayed, incomplete, or unavailable. Gold uses GC=F futures as a proxy, not a broker's exact XAUUSD CFD quote.")
+    st.stop()
+
+last = data.iloc[-1]
+side, score, checks = score_signal(last, bias, score_threshold)
+daily_loss_reached = ((st.session_state.daily_start - st.session_state.balance) / max(st.session_state.daily_start, 1) * 100) >= max_daily_loss
+if st.session_state.trades_today >= max_trades_per_day:
+    side = "WAIT"
+    checks = {"Daily trade limit reached": True}
+elif daily_loss_reached:
+    st.session_state.halted = True
+    side = "WAIT"
+    checks = {"Daily loss limit reached": True}
+st.subheader(f"{market_name} — {signal_tf} signal")
+m1,m2,m3,m4,m5 = st.columns(5)
+m1.metric("Last candle close", f"{float(last['Close']):,.5f}")
+m2.metric("HTF bias", bias)
+m3.metric("AI rule-fit score", f"{score}/100")
+m4.metric("RSI / MFI", f"{last['RSI']:.1f} / {last['MFI']:.1f}" if pd.notna(last["MFI"]) else f"{last['RSI']:.1f} / n/a")
+m5.metric("ADX / Rel. volume", f"{last['ADX']:.1f} / {last['RelVol']:.2f}x" if pd.notna(last["RelVol"]) else f"{last['ADX']:.1f} / n/a")
+
+if st.session_state.halted:
+    st.error("Paper bot is halted by the daily loss control. It will reset on the next calendar day.")
+elif st.session_state.trades_today >= max_trades_per_day:
+    st.error(f"Daily trade limit reached ({max_trades_per_day}). No more paper trades will be allowed today.")
+elif side in ("BUY","SELL"):
+    st.success(f"Potential {side} setup — score {score}/100. This is a paper signal, not a guaranteed trade.")
+else:
+    st.warning(f"WAIT — no setup passed all hard filters. Best-side rule-fit score: {score}/100.")
+
+st.subheader("Automatic paper trading")
+st.caption("Paper trading only: no broker, exchange, wallet, or real-money orders. Start arms the scanner; each scan still requires a button press. This app does not run continuously in the background.")
+status = st.session_state.auto_bot_status
+st.write(f"**Bot status:** `{status}`")
+start_col, pause_col, stop_col = st.columns(3)
+with start_col:
+    if st.button("▶ Start", use_container_width=True, disabled=(status == "RUNNING")):
+        st.session_state.auto_bot_status = "RUNNING"
+        st.rerun()
+with pause_col:
+    if st.button("⏸ Pause", use_container_width=True, disabled=(status != "RUNNING")):
+        st.session_state.auto_bot_status = "PAUSED"
+        st.rerun()
+with stop_col:
+    if st.button("⏹ Stop", use_container_width=True, disabled=(status == "STOPPED")):
+        st.session_state.auto_bot_status = "STOPPED"
+        st.rerun()
+if st.session_state.auto_bot_status == "RUNNING":
+    st.success("Scanner is started. Press Scan to evaluate the latest available candle.")
+elif st.session_state.auto_bot_status == "PAUSED":
+    st.warning("Scanner is paused. No new scans will run until you press Start. Existing paper positions remain open and are not automatically managed while paused.")
+else:
+    st.info("Scanner is stopped. Existing paper positions remain open; Stop does not close them.")
+
+if st.button("🔎 Scan market & manage paper positions", type="primary", disabled=(st.session_state.auto_bot_status != "RUNNING")):
+    (st.session_state.balance, st.session_state.trades_today,
+     st.session_state.auto_daily_start_balance, st.session_state.auto_open_positions,
+     auto_events, auto_message) = simulate_auto_paper_scan(
+        data, market_name, cfg["symbol"], signal_tf, bias, score_threshold,
+        risk_pct, rr2, st.session_state.balance, st.session_state.trades_today,
+        max_trades_per_day, st.session_state.auto_daily_start_balance,
+        max_daily_loss, st.session_state.auto_open_positions
+    )
+    st.session_state.last_auto_events = auto_events
+    st.session_state.last_auto_message = auto_message
     st.rerun()
 
-st_autorefresh(interval=refresh_seconds * 1000, key="auto_refresh")
-state = load_state()
-if state.get("day") != str(date.today()):
-    state["day"] = str(date.today())
-    state["day_start_balance"] = state["balance"]
+if st.session_state.get("last_auto_message"):
+    st.info(st.session_state.last_auto_message)
+for ev in st.session_state.get("last_auto_events", []):
+    st.write("• " + ev)
 
-# Apply selected risk for new positions.
-RISK_PER_TRADE_PCT = risk_pct
+st.markdown("**Open automatic paper positions**")
+if st.session_state.auto_open_positions:
+    st.dataframe(pd.DataFrame(st.session_state.auto_open_positions), use_container_width=True)
+else:
+    st.info("No automatic paper positions are currently open.")
 
-market_tabs = st.tabs(list(MARKETS.keys()))
-all_signal_rows = []
-all_frames = {}
-fetch_errors = []
+if side in ("BUY","SELL"):
+    levels = make_trade_levels(last, side, risk_pct, rr2)
+    if levels:
+        entry, stop, tp1, tp2 = levels["entry"], levels["stop"], levels["tp1"], levels["tp2"]
+        risk_per_unit = abs(entry-stop)
+        risk_cash = st.session_state.balance * risk_pct/100
+        units = risk_cash / max(risk_per_unit, 1e-9)
+        a,b,c,d = st.columns(4)
+        a.metric("Entry (signal close)", f"{entry:,.5f}")
+        b.metric("Stop loss", f"{stop:,.5f}")
+        c.metric("TP1 (60%)", f"{tp1:,.5f}")
+        d.metric("TP2 (40%)", f"{tp2:,.5f}")
+        st.caption(f"Indicative sizing: {units:,.4f} units using price-distance risk math. This is not contract-aware sizing; Forex/Gold contract sizes, pip values, leverage, fees, swaps and slippage differ by broker.")
+        can_record_trade = (not st.session_state.halted and st.session_state.trades_today < max_trades_per_day)
+        if can_record_trade and st.button(f"➕ Record {side} paper trade"):
+            st.session_state.trades.append({
+                "Time": datetime.now().isoformat(timespec="seconds"),
+                "Market": market_name, "Symbol": cfg["symbol"], "TF": signal_tf, "Side": side,
+                "Score": score, "Entry": entry, "Stop": stop, "TP1": tp1, "TP2": tp2,
+                "Status": "OPEN (manual tracking)", "Virtual risk budget": risk_cash
+            })
+            st.session_state.trades_today += 1
+            persist_trade_log(st.session_state.trades)
+            st.success("Paper setup recorded. No real order was sent.")
+else:
+    levels = None
 
-for tab, (market_name, symbols) in zip(market_tabs, MARKETS.items()):
-    with tab:
-        for symbol, friendly_name in symbols.items():
-            with st.expander(f"{friendly_name} · {symbol}", expanded=(symbol == "XAUUSD=X")):
-                frames = {}
-                for tf_name, interval in TIMEFRAMES.items():
-                    try:
-                        raw = fetch_bars(symbol, interval)
-                        frames[tf_name] = add_indicators(raw)
-                    except Exception as exc:
-                        frames[tf_name] = pd.DataFrame()
-                        fetch_errors.append(f"{symbol} {tf_name}: {exc}")
-                all_frames[symbol] = frames
-                direction, scored, levels = make_signal(frames)
-                latest = frames["15 minutes"].iloc[-1] if not frames["15 minutes"].empty else None
-                if latest is not None:
-                    update_paper_trade(state, symbol, latest, usd_inr)
-                # Enforce daily loss guardrail for new entries.
-                day_start = float(state.get("day_start_balance", STARTING_BALANCE))
-                daily_loss_pct = max(0.0, (day_start - float(state["balance"])) / max(day_start, 1.0) * 100)
-                can_open = daily_loss_pct < MAX_DAILY_LOSS_PCT
-                current_bar_id = str(latest.name) if latest is not None else ""
-                last_entry_bar = state.setdefault("last_entry_bar", {}).get(symbol)
-                if direction in ("BUY", "SELL") and levels and symbol not in state["open_trades"] and can_open and current_bar_id != last_entry_bar:
-                    if open_paper_trade(state, symbol, direction, levels, usd_inr):
-                        state["last_entry_bar"][symbol] = current_bar_id
-                        state["history"].append({"closed_at": datetime.now(timezone.utc).isoformat(), "symbol": symbol, "side": direction, "entry": levels["entry"], "exit": None, "qty_remaining": state["open_trades"][symbol]["qty"], "pnl_inr": 0.0, "reason": "PAPER ENTRY"})
-                elif direction in ("BUY", "SELL") and not can_open:
-                    st.warning("Daily loss guardrail reached: no new paper trades will be opened today.")
-                st.metric("Current signal", direction)
-                c1, c2, c3 = st.columns(3)
-                if levels:
-                    c1.metric("Entry", f"{levels['entry']:.5f}")
-                    c2.metric("Target 1", f"{levels['t1']:.5f}")
-                    c3.metric("Target 2", f"{levels['t2']:.5f}")
-                    st.metric("Stop Loss", f"{levels['sl']:.5f}")
-                else:
-                    st.info("No aligned setup across all three timeframes. No new trade signal.")
-                tf_data = []
-                for tf_name, result in scored.items():
-                    r = result["row"]
-                    tf_data.append({
-                        "Timeframe": tf_name,
-                        "Signal": result["label"],
-                        "Score": result["score"],
-                        "Close": round(float(r["Close"]), 5) if r is not None and pd.notna(r.get("Close")) else None,
-                        "RSI(14)": round(float(r["RSI"]), 2) if r is not None and pd.notna(r.get("RSI")) else None,
-                        "ATR(14)": round(float(r["ATR"]), 5) if r is not None and pd.notna(r.get("ATR")) else None,
-                        "ADX(14)": round(float(r["ADX"]), 2) if r is not None and pd.notna(r.get("ADX")) else None,
-                        "+DI": round(float(r["+DI"]), 2) if r is not None and pd.notna(r.get("+DI")) else None,
-                        "-DI": round(float(r["-DI"]), 2) if r is not None and pd.notna(r.get("-DI")) else None,
-                    })
-                st.dataframe(pd.DataFrame(tf_data), use_container_width=True, hide_index=True)
-                if latest is not None:
-                    st.caption(f"Latest 15m candle close: {latest.name} · Data from Yahoo Finance; may be delayed or unavailable.")
-                all_signal_rows.append({"Market": market_name, "Instrument": symbol, "Signal": direction, "Open paper trade": "Yes" if symbol in state["open_trades"] else "No"})
+with st.expander("AI Brain — condition-by-condition explanation", expanded=True):
+    st.write("The score is a weighted rule-fit score, not a calibrated probability of winning. Hard filters reject a setup if the HTF bias disagrees, ADX is not ranging, or price has not closed outside the relevant Bollinger Band.")
+    for name, passed in checks.items():
+        st.write(("✅ " if passed else "⬜ ") + name)
 
-save_state(state)
+st.subheader("Candlestick chart — indicators and SMC")
+chart_df = data.tail(180).copy()
+fig = go.Figure(data=[go.Candlestick(x=chart_df.index, open=chart_df["Open"], high=chart_df["High"], low=chart_df["Low"], close=chart_df["Close"], name="Candles")])
+for col, label in [("EMA9","EMA 9"),("EMA21","EMA 21"),("EMA50","EMA 50"),("BB_Upper","BB Upper"),("BB_Mid","BB Middle"),("BB_Lower","BB Lower"),("PowerUpper","Power Upper"),("PowerLower","Power Lower")]:
+    if col in chart_df:
+        fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df[col], mode="lines", name=label, connectgaps=False))
+for col, label, symbol in [("BOS_Bull","Bullish BOS","triangle-up"),("CHOCH_Bull","Bullish CHOCH","triangle-up"),("SweepLow","Low Sweep","circle"),("BOS_Bear","Bearish BOS","triangle-down"),("CHOCH_Bear","Bearish CHOCH","triangle-down"),("SweepHigh","High Sweep","circle")]:
+    if col in chart_df:
+        pts = chart_df[chart_df[col].fillna(False)]
+        if not pts.empty:
+            y = pts["Low"] if "Bull" in col or col == "SweepLow" else pts["High"]
+            fig.add_trace(go.Scatter(x=pts.index, y=y, mode="markers", name=label, marker_symbol=symbol, marker_size=9))
+fig.update_layout(height=620, xaxis_rangeslider_visible=False, legend_orientation="h", margin=dict(l=10,r=10,t=30,b=10))
+st.plotly_chart(fig, use_container_width=True)
+st.caption("SMC markers are algorithmic approximations from OHLC candles; they do not reveal actual institutional orders. Data and indicators can be delayed or incomplete.")
 
-# Main account summary
+st.subheader("SMC status on latest candle")
+smc_cols = [c for c in ["BOS_Bull","BOS_Bear","CHOCH_Bull","CHOCH_Bear","SweepLow","SweepHigh","InBullOB","InBearOB","FVG_Bull","FVG_Bear","Discount","Premium"] if c in data.columns]
+st.dataframe(data[smc_cols].tail(10).sort_index(ascending=False), use_container_width=True)
+
+st.subheader("Recent candles and indicators")
+show_cols = ["Open","High","Low","Close","Volume","RSI","MFI","ADX","EMA9","EMA21","EMA50","EMA200","BB_Lower","BB_Mid","BB_Upper","VWAP","ATR","RelVol","Support","Resistance","PowerLower","PowerMid","PowerUpper","PLUS_DI","MINUS_DI","BOS_Bull","BOS_Bear","CHOCH_Bull","CHOCH_Bear","SweepLow","SweepHigh","FVG_Bull","FVG_Bear","Discount","Premium"]
+st.dataframe(data[show_cols].tail(25).sort_index(ascending=False), use_container_width=True)
+
+st.subheader("Paper trade log")
+if st.session_state.trades:
+    log = pd.DataFrame(st.session_state.trades)
+    st.dataframe(log.iloc[::-1], use_container_width=True)
+    csv = log.to_csv(index=False).encode("utf-8")
+    st.download_button("Download paper log CSV", csv, "paper_trade_log.csv", "text/csv")
+    c1,c2 = st.columns(2)
+    with c1:
+        if st.button("Mark selected/latest trade as TP1 hit"):
+            for tr in reversed(st.session_state.trades):
+                if tr["Status"].startswith("OPEN"):
+                    tr["Status"] = "TP1 HIT — 60% closed; stop to breakeven (manual simulation)"
+                    persist_trade_log(st.session_state.trades)
+                    break
+            st.rerun()
+    with c2:
+        if st.button("Close latest open trade at current close"):
+            for tr in reversed(st.session_state.trades):
+                if tr["Status"].startswith("OPEN"):
+                    exit_price = float(last["Close"])
+                    pnl_per_unit = (exit_price-tr["Entry"]) if tr["Side"]=="BUY" else (tr["Entry"]-exit_price)
+                    # Placeholder estimate only; real instrument contract value is unknown.
+                    estimated_pnl = pnl_per_unit * (tr["Virtual risk budget"] / max(abs(tr["Entry"]-tr["Stop"]),1e-9))
+                    tr["Status"] = f"CLOSED @ {exit_price:.5f} | est. PnL {estimated_pnl:.2f} price-units"
+                    st.session_state.balance += estimated_pnl
+                    persist_trade_log(st.session_state.trades)
+                    break
+            st.rerun()
+else:
+    st.info("No paper trades recorded yet. When a setup passes the filters, use the Record button to add it to the log.")
+
+with st.expander("Backtest (historical, simplified)"):
+    st.warning("Backtest is approximate and educational: no spread, commissions, swaps, funding, broker contract specs, or realistic slippage. Intrabar stop/target ordering is conservative, but this is not a substitute for a proper event-driven backtester.")
+    bt_period = st.selectbox("Backtest range (based on available Yahoo candles)", ["Current loaded history"], index=0)
+    cost_bps = st.slider("Estimated round-trip costs (basis points of price × units)", 0.0, 20.0, 2.0, 0.5)
+    if st.button("Run backtest"):
+        bt, final_balance, err = run_backtest(raw, htf, signal_tf, htf_tf, score_threshold, risk_pct, rr2, STARTING_BALANCE, max_daily_loss, cost_bps)
+        if err:
+            st.error(err)
+        elif bt.empty:
+            st.warning("No trades passed the filters in the loaded history.")
+        else:
+            wins = (bt["PnL (price units)"] > 0).sum()
+            win_rate = 100*wins/len(bt)
+            gross_profit = bt.loc[bt["PnL (price units)"]>0,"PnL (price units)"].sum()
+            gross_loss = abs(bt.loc[bt["PnL (price units)"]<0,"PnL (price units)"].sum())
+            pf = gross_profit/gross_loss if gross_loss else np.inf
+            x1,x2,x3,x4 = st.columns(4)
+            x1.metric("Trades", len(bt))
+            x2.metric("Win rate", f"{win_rate:.1f}%")
+            x3.metric("Profit factor", f"{pf:.2f}" if np.isfinite(pf) else "∞")
+            x4.metric("Final model balance", f"₹{final_balance:,.2f}")
+            equity = bt["Balance"]
+            peak = equity.cummax()
+            drawdown = ((peak - equity) / peak.replace(0, np.nan) * 100).max() if len(equity) else 0.0
+            expectancy = bt["PnL (price units)"].mean()
+            x5,x6 = st.columns(2)
+            x5.metric("Max drawdown (trade-equity proxy)", f"{drawdown:.2f}%")
+            x6.metric("Average P&L / trade (price units)", f"{expectancy:.5f}")
+            st.dataframe(bt.iloc[::-1], use_container_width=True)
+            st.download_button("Download backtest CSV", bt.to_csv(index=False).encode("utf-8"), "backtest_results.csv", "text/csv")
+    if st.button("Compare original indicators vs SMC-enhanced strategy"):
+        baseline, base_final, base_err = run_backtest(raw, htf, signal_tf, htf_tf, score_threshold, risk_pct, rr2, STARTING_BALANCE, max_daily_loss, cost_bps, use_smc=False)
+        enhanced, smc_final, smc_err = run_backtest(raw, htf, signal_tf, htf_tf, score_threshold, risk_pct, rr2, STARTING_BALANCE, max_daily_loss, cost_bps, use_smc=True)
+        if base_err or smc_err:
+            st.error(base_err or smc_err)
+        else:
+            def summarize(label, trades, final):
+                if trades.empty:
+                    return {"Strategy": label, "Trades": 0, "Win rate %": np.nan, "Profit factor": np.nan, "Net P&L": final-STARTING_BALANCE, "Max drawdown %": np.nan}
+                pn = trades["PnL (price units)"]
+                gp = pn[pn > 0].sum(); gl = abs(pn[pn < 0].sum())
+                eq = trades["Balance"]; peak = eq.cummax()
+                dd = ((peak-eq)/peak.replace(0,np.nan)*100).max()
+                return {"Strategy": label, "Trades": len(trades), "Win rate %": round((pn>0).mean()*100,2), "Profit factor": round(gp/gl,2) if gl else np.inf, "Net P&L": round(final-STARTING_BALANCE,2), "Max drawdown %": round(float(dd),2) if pd.notna(dd) else 0.0}
+            comparison = pd.DataFrame([summarize("Original indicators (no SMC gate)", baseline, base_final), summarize("Indicators + SMC", enhanced, smc_final)])
+            st.dataframe(comparison, use_container_width=True)
+            st.download_button("Download strategy comparison CSV", comparison.to_csv(index=False).encode("utf-8"), "strategy_comparison.csv", "text/csv")
+            st.caption("Comparison is only as reliable as the loaded data and simplified backtester. Scores are normalized within each variant; results are not a guarantee of future performance.")
+
 st.divider()
-st.subheader("💰 Paper Account")
-open_trades = state["open_trades"]
-history = state["history"]
-closed = [h for h in history if h.get("exit") is not None]
-realized = sum(float(h.get("pnl_inr", 0) or 0) for h in closed)
-entry_count = sum(1 for h in history if h.get("reason") == "PAPER ENTRY")
-win_count = sum(1 for h in closed if float(h.get("pnl_inr", 0) or 0) > 0)
-win_rate = (win_count / len(closed) * 100) if closed else 0.0
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Virtual balance", f"₹{state['balance']:,.2f}")
-m2.metric("Realized P/L", f"₹{realized:,.2f}")
-m3.metric("Open positions", str(len(open_trades)))
-m4.metric("Closed-trade win rate", f"{win_rate:.1f}%" if closed else "N/A")
-
-if open_trades:
-    open_rows = []
-    for symbol, trade in open_trades.items():
-        open_rows.append({"Instrument": symbol, "Side": trade["side"], "Entry": round(trade["entry"], 5), "Target 1": round(trade["t1"], 5), "Target 2": round(trade["t2"], 5), "Stop Loss": round(trade["sl"], 5), "T1 hit": trade["t1_hit"], "Opened (UTC)": trade["opened_at"]})
-    st.markdown("#### Open positions")
-    st.dataframe(pd.DataFrame(open_rows), use_container_width=True, hide_index=True)
-else:
-    st.info("No open paper positions right now.")
-
-st.markdown("#### Trade history")
-if history:
-    hist_df = pd.DataFrame(history)
-    cols = [c for c in ["closed_at", "symbol", "side", "entry", "exit", "qty_remaining", "pnl_inr", "reason"] if c in hist_df.columns]
-    hist_df = hist_df[cols].rename(columns={"closed_at": "Timestamp (UTC)", "symbol": "Instrument", "side": "Side", "entry": "Entry", "exit": "Exit", "qty_remaining": "Quantity", "pnl_inr": "P/L (INR)", "reason": "Event"})
-    st.dataframe(hist_df.iloc[::-1], use_container_width=True, hide_index=True)
-    csv = hist_df.to_csv(index=False).encode("utf-8")
-    st.download_button("Download trade history CSV", data=csv, file_name="paper_trade_history.csv", mime="text/csv")
-else:
-    st.write("No trades recorded yet. The bot waits for all three timeframes to align.")
-
-st.markdown("#### Market watch")
-if all_signal_rows:
-    st.dataframe(pd.DataFrame(all_signal_rows), use_container_width=True, hide_index=True)
-
-with st.expander("Important limitations and safety notes"):
-    st.markdown("""
-- This is a **rule-based research prototype**, not a proven profitable AI strategy.
-- It does **not** connect to MT5, a broker, a wallet, or real-money execution.
-- Yahoo Finance data can be delayed, limited, or unavailable; crypto/forex/gold coverage varies by symbol and region.
-- The free app only refreshes while the dashboard is open and the hosting process is awake. It is not a guaranteed 24/7 background worker.
-- The VWAP is a per-date approximation from the provider's bars; forex and some feeds may report zero or missing volume.
-- SMC/BOS/CHoCH/order blocks are represented only by simple rolling swing/breakout proxies here. They are not a full institutional SMC implementation.
-- Power Channel is a rolling mean ± 2 standard deviations, not a validated predictive channel.
-- The INR P/L conversion uses the editable approximate USD/INR rate and simplified instrument units. It is not broker-accurate lot sizing. Validate contract multipliers, spreads, commissions, slippage, and currency conversion before drawing conclusions.
-- The simulator uses candle high/low to approximate fills. It assumes stop-loss first if stop and target are touched in the same candle.
-- Never add wallet keys or broker passwords to this app. Real-money trading is intentionally not implemented.
-""")
-
-if fetch_errors:
-    with st.expander("Data warnings"):
-        for err in fetch_errors:
-            st.write(err)
-
-st.caption(f"Last dashboard refresh: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} local device time · Auto-refresh: {refresh_seconds}s while page is active")
+st.caption("Important: this version is paper-only. No broker API, exchange API, wallet, private key, or live trading is connected. Validate data quality and out-of-sample performance before considering any real-money use.")

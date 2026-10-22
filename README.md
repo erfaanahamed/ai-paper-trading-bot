@@ -1,48 +1,23 @@
-# Multi-Market AI-Assisted Paper Trading Bot (Prototype)
+# AI Paper Trading Brain — Version C research build
 
-A mobile-friendly Streamlit dashboard for simulated-only trading analysis. It includes Gold, selected Forex pairs, and selected Crypto assets; 15m, 30m, and 1h bars; EMA 9/21/50/200, RSI(14), ATR(14), ADX(14), +DI/-DI, a volume-weighted average approximation, rolling support/resistance, and an adaptive rolling channel.
+## Included
+- Rule-based paper-trading dashboard for Gold futures proxy, US Oil futures proxy, selected FX pairs, and crypto tickers using Yahoo Finance data.
+- EMA 9/21/50/200, RSI, MFI, Bollinger Bands (20, 2.5), Wilder-smoothed ATR/ADX/+DI/-DI, approximate session VWAP, relative volume, adaptive support/resistance and Power Channel.
+- SMC-style OHLC proxies: BOS, CHOCH, liquidity sweeps, 3-candle FVG, approximate order-block zones, and premium/discount dealing-range zones.
+- Rule-fit scoring (not a probability), higher-timeframe filter, configurable risk settings, Start/Pause/Stop controls, button-driven paper scan, CSV trade log, and candlestick chart with indicator/SMC markers.
+- Simplified historical backtest using the selected signal timeframe and selected HTF, with configurable estimated costs and basic performance metrics.
 
-## Safety and scope
+## Run locally
+1. Install Python 3.10+.
+2. In this folder run: `pip install -r requirements.txt`
+3. Run: `streamlit run app.py`
 
-- Starting virtual balance: ₹100,000.
-- Paper trading only. No broker, MT5, wallet, API secret, or real-money order integration.
-- This is a prototype, not a proven profitable AI strategy or investment advice.
-- Market data is provided by Yahoo Finance via `yfinance`; it may be delayed, incomplete, or unavailable. Symbol coverage can change.
-- The bot only refreshes while the dashboard and hosting process are active. Free hosting is not guaranteed to run 24/7.
-- SMC concepts are approximated with rolling swing/breakout logic; Power Channel is a rolling mean ± 2 standard deviations.
-- P/L conversion and position sizing are simplified for research and are not broker-accurate contract sizing.
-
-## Run locally (PC/Linux/Mac)
-
-```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
-pip install -r requirements.txt
-streamlit run app.py
-```
-
-## Deploy from an Android phone using free cloud hosting
-
-You will need a GitHub account and a Streamlit Community Cloud account. The exact interface may change.
-
-1. Extract this ZIP on your phone, or upload the files to a new GitHub repository using the GitHub mobile website/app.
-2. Put `app.py`, `requirements.txt`, and `README.md` at the repository root.
-3. Open Streamlit Community Cloud, sign in with GitHub, and create a new app pointing to the repository and `app.py`.
-4. Wait for dependencies to install and the app to launch.
-5. Open the app URL on your Android phone. Keep the dashboard open for periodic refreshes.
-
-### Persistence warning
-
-The app writes `paper_state.json` beside the code. Some cloud hosts use ephemeral filesystems or may restart apps, so the virtual trade history/balance may reset or be lost. This starter does not yet use a persistent database or a separate always-on worker.
-
-## Strategy summary
-
-- Each timeframe receives an indicator score.
-- A BUY/SELL signal is emitted only when 15m, 30m, and 1h all agree.
-- Entry uses the latest 15m close; stop distance is based on 1.5 × ATR (with a small minimum distance); targets are 1R and 2R.
-- New trades risk a configurable fraction of virtual balance; a 3% daily loss guardrail blocks new entries.
-- The simulator checks candle highs/lows for stop/target events and conservatively assumes the stop is hit first if both stop and target are touched within one bar.
-
-## Before relying on results
-
-Run a meaningful backtest with historical data, include spread/fees/slippage and instrument contract specifications, verify time-zone/session behavior, and compare paper fills against real market conditions. Do not enable real-money trading based on a short or favorable demo period.
+## Important limitations
+- PAPER TRADING ONLY. No broker, exchange, wallet, API key, or real-money orders are connected.
+- Start arms the scanner; scans are button-driven, not continuous/background. Pause/Stop stop new scans but do not liquidate open simulated positions.
+- Yahoo Finance feeds may be delayed, incomplete, unavailable, or unsuitable for execution. Gold and oil are futures proxies, not necessarily your broker's XAUUSD/WTI CFD prices.
+- FX volume may be absent or tick-based. MFI and relative volume are therefore not reliable on every symbol; MFI is marked unavailable when all volume is zero.
+- SMC concepts are algorithmic approximations from OHLC data, not proof of actual institutional orders. Order blocks are heuristic and need visual review.
+- The backtester is simplified and not event-driven. It approximates costs in price-units and does not model broker contract sizes, pip values, leverage, financing, exchange fees, spread dynamics, or realistic fills. Do not compare its virtual INR balance to real P&L.
+- Local CSV trade history may not persist across cloud restarts/redeploys. Streamlit session state and this prototype are not a durable trading database.
+- No win rate is promised. Validate with clean out-of-sample and walk-forward tests before making decisions.
