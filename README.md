@@ -1,13 +1,14 @@
-# AI Paper Trading Brain — display fix
+# AI Paper Trading Brain — Dashboard Fix 2
 
-## Changes
-- Fixed the all-market dashboard error: the caller expected four return values from `score_signal`, but that function returns three. This caused market rows to be marked as data errors even when market data downloaded successfully.
-- Changed the selected-market title from a large heading to normal-sized bold text.
+## Fixes
+- Corrected the all-market dashboard's return-value unpacking bug: `score_signal()` returns three values, not four.
+- Changed the selected-market title to normal-sized text.
+- Python syntax compilation passed.
 
 ## Deploy
-Replace `app.py` in your GitHub repository with this version. Ensure `requirements.txt` is also present, then let Streamlit Community Cloud redeploy.
+1. Replace `app.py` in the existing GitHub repository on the `main` branch with this version and commit.
+2. Keep `requirements.txt` aligned with the included version.
+3. Wait for Streamlit Community Cloud to redeploy, then reboot/refresh if needed.
+4. Confirm the all-market dashboard shows usable prices. If prices remain unavailable, inspect the Data status column; that may be a separate provider/ticker/timeframe issue.
 
-## Notes
-- This app is for paper trading only and does not place real-money orders.
-- Yahoo Finance may still return unavailable data for some symbols/timeframes. Those rows should now show the provider/data status instead of failing because of the return-value mismatch.
-- The file passed Python syntax compilation, but live market-data availability and the hosted app still need to be checked after deployment.
+Paper trading only. No guarantee of profitability or win rate.
