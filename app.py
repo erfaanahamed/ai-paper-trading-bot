@@ -265,9 +265,8 @@ def scan_all_market_signals():
             htf_processed = add_adaptive_levels(add_indicators(htf_market), config["htf"]) if not htf_market.empty else htf_market
             bias_value, _ = htf_bias(htf_processed) if not htf_processed.empty else ("Unknown", None)
             last_row = market_data.iloc[-1]
-            # score_signal returns exactly three values: side, score, and checks.
-            best_side, best_score, _ = score_signal(last_row, bias_value, threshold=78)
-            signal_value = best_side if best_side in ("BUY", "SELL") else "WAIT"
+            best_side, best_score, _, hard_pass = score_signal(last_row, bias_value, threshold=78)
+            signal_value = best_side if best_side in ("BUY", "SELL") and hard_pass else "WAIT"
             rows.append({
                 "Market": name, "Symbol": config["symbol"], "TF": tf,
                 "Last close": round(float(last_row["Close"]), 5),
@@ -683,7 +682,7 @@ elif daily_loss_reached:
     st.session_state.halted = True
     side = "WAIT"
     checks = {"Daily loss limit reached": True}
-st.markdown(f"**Selected market: {market_name} · Timeframe: {signal_tf} · Signal**")
+st.subheader(f"{market_name} — {signal_tf} signal")
 m1,m2,m3,m4,m5 = st.columns(5)
 m1.metric("Last candle close", f"{float(last['Close']):,.5f}")
 m2.metric("HTF bias", bias)
