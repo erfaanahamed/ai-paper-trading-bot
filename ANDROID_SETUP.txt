@@ -1,10 +1,17 @@
-ANDROID QUICK GUIDE
+BRAIN AI TRADING BOT V2 — ANDROID QUICK GUIDE
 
-This project is a Streamlit web app, not an APK. You cannot run install_and_run.bat on Android.
+1. Download and extract the ZIP.
+2. Create a GitHub repository from your phone browser.
+3. Upload app.py, requirements.txt, README.md, and this guide.
+4. Open https://share.streamlit.io and deploy the repository with app.py as the entry point.
+5. Open the app URL on Android Chrome. Chrome menu > Add to Home screen creates an app-like shortcut.
 
-1) From your phone browser, create a GitHub repository.
-2) Upload app.py and requirements.txt.
-3) In Streamlit Community Cloud, deploy the GitHub repository with app.py as the entrypoint.
-4) Open the deployed URL on your phone. In Chrome menu, choose Add to Home screen for an app-like shortcut.
+Dashboard features:
+- One table scans every configured symbol.
+- Trade History shows one row per trade, open/close details, entry/stop/targets, exit reason, virtual P&L, filters, and CSV download.
+- AI Win Estimate % is a model estimate; Paper Win Rate % is calculated only from completed simulated trades and may be blank initially.
+- Automatic paper trading scans every listed symbol using the selected entry timeframe.
+- Daily paper-trading loss limit is 3%; risk budget is 0.5% per trade; max 20 new paper trades/day across the account.
+- TP1 closes 60%, then remaining stop moves to break-even + buffer; TP2 closes the remaining 40%.
 
-Cloud hosting may sleep and its local files may not persist. This version is paper trading only and must not be treated as a continuously running trading service.
+This is a paper-trading research prototype, not an APK and not a real-money broker bot. It needs the page/session to stay active to refresh, and cloud hosting may sleep or lose local files. Market data symbols can be proxies and may differ from a broker's CFD quotes. Local history files may be lost if cloud hosting restarts; download the CSV regularly or configure persistent storage.
