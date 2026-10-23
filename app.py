@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, math, os, uuid
+import json, math, os
 from datetime import datetime, date
 from pathlib import Path
 
@@ -398,7 +398,7 @@ def scan_and_trade(market_name: str, symbol: str, entry_tf: str, frames: dict, m
     if not levels: return
     risk_cash = float(state["balance"])*risk_pct/100
     qty = risk_cash/max(levels["RiskPerUnit"], 1e-12)
-    pos = {"TradeID": uuid.uuid4().hex[:12].upper(), "Opened": datetime.now().isoformat(timespec="seconds"), "Market": market_name,
+    pos = {"Opened": datetime.now().isoformat(timespec="seconds"), "Market": market_name,
            "Symbol": symbol, "Timeframe": entry_tf, "Side": side,
            "AI_Win_Probability_pct": round(probability, 2), "Entry": levels["Entry"],
            "InitialStop": levels["InitialStop"], "Stop": levels["Stop"], "TP1": levels["TP1"],
@@ -432,87 +432,22 @@ symbol = MARKETS[market_name]["symbol"]
 if state.get("day") != date.today().isoformat():
     state["day"] = date.today().isoformat(); state["day_start"] = float(state["balance"]); state["trades_today"] = 0; state["daily_limit_logged"] = False; state["running"] = True
 
-# Scan every configured symbol on the chosen entry timeframe. The four timeframe feeds
-# are loaded per symbol; yfinance results are cached to reduce repeat network calls.
-all_market_frames = {}
-scan_rows = []
-models_by_market = {}
-with st.spinner("Scanning all symbols and training/checking the AI Brain..."):
-    for scan_market, scan_meta in MARKETS.items():
-        scan_symbol = scan_meta["symbol"]
-        scan_frames = {}
-        for tf in TIMEFRAMES:
-            raw = download_data(scan_symbol, tf)
-            scan_frames[tf] = add_indicators(raw, tf) if not raw.empty else pd.DataFrame()
-        all_market_frames[scan_market] = scan_frames
-        scan_entry_data = scan_frames.get(entry_tf, pd.DataFrame())
-        scan_model, scan_stats = (None, {"samples": 0, "holdout_win_rate": None, "holdout_accuracy": None, "holdout_brier": None})
-        if not scan_entry_data.empty and len(scan_entry_data) >= 280:
-            scan_model, scan_stats = train_brain_cached(scan_symbol, entry_tf, str(scan_entry_data.index[-1]), scan_entry_data.iloc[:-1].copy())
-        models_by_market[scan_market] = (scan_model, scan_stats)
-        # Manage every symbol's existing simulated positions, even if its signal is currently WAIT.
-        manage_positions(scan_market, scan_frames, state)
-        closed = scan_entry_data.iloc[:-1] if not scan_entry_data.empty else pd.DataFrame()
-        biases = {tf: trend_bias(scan_frames[tf]) if not scan_frames[tf].empty else "Unknown" for tf in TIMEFRAMES}
-        buy_prob = sell_prob = None
-        best_side = "WAIT"
-        best_prob = None
-        gate_reasons = ["Insufficient market data or training examples"]
-        gate_ok = False
-        if scan_model is not None and not closed.empty:
-            current_row = closed.iloc[-1]
-            buy_prob = float(scan_model.predict_proba(feature_row(current_row, "BUY"))[0][1])*100
-            sell_prob = float(scan_model.predict_proba(feature_row(current_row, "SELL"))[0][1])*100
-            best_side = "BUY" if buy_prob >= sell_prob else "SELL"
-            best_prob = max(buy_prob, sell_prob)
-            gate_ok, gate_reasons = signal_quality(current_row, best_side, biases)
-        # Actual historical win rate comes only from CLOSED paper trades, not model confidence.
-        actual_wr, closed_count = None, 0
-        if TRADE_LOG.exists():
-            try:
-                hist = pd.read_csv(TRADE_LOG)
-                if {"Market", "Status", "PnL_virtual"}.issubset(hist.columns):
-                    done = hist[(hist["Market"] == scan_market) & (hist["Status"] == "CLOSED")].copy()
-                    if not done.empty:
-                        pnl = pd.to_numeric(done["PnL_virtual"], errors="coerce").dropna()
-                        closed_count = len(pnl)
-                        if closed_count:
-                            actual_wr = float((pnl > 0).mean()*100)
-            except Exception:
-                pass
-        loss_pct_now = (float(state["day_start"])-float(state["balance"]))/max(float(state["day_start"]), 1)*100
-        if scan_entry_data.empty or len(scan_entry_data) < 230:
-            status = "NO DATA"
-        elif scan_model is None:
-            status = "TRAINING"
-        elif loss_pct_now >= max_daily_loss_pct:
-            status = "DAILY LIMIT"
-        elif best_prob is not None and best_prob > probability_threshold and gate_ok:
-            status = "TRADE READY"
-        elif best_prob is not None and best_prob > probability_threshold:
-            status = "FILTER BLOCK"
-        else:
-            status = "WAIT"
-        scan_rows.append({
-            "Market": scan_market, "Symbol": scan_symbol, "Entry TF": entry_tf,
-            "H1 Trend": biases["1h"], "M30 Trend": biases["30m"], "M15 Trend": biases["15m"],
-            "AI BUY %": round(buy_prob, 1) if buy_prob is not None else None,
-            "AI SELL %": round(sell_prob, 1) if sell_prob is not None else None,
-            "AI Win Estimate %": round(best_prob, 1) if best_prob is not None else None,
-            "Best Side": best_side, "Paper Win Rate %": round(actual_wr, 1) if actual_wr is not None else None,
-            "Closed Trades": closed_count, "Status": status
-        })
-        # Automatically paper-trade every eligible symbol, with the shared 3% daily loss limit.
-        if not scan_entry_data.empty and scan_model is not None:
-            scan_and_trade(scan_market, scan_symbol, entry_tf, scan_frames, scan_model, scan_stats, state,
-                           probability_threshold, risk_pct, max_daily_loss_pct, max_trades_per_day)
+# Load all four timeframes for selected market.
+frames_raw, frames = {}, {}
+with st.spinner(f"Loading {market_name} market data and training the AI Brain..."):
+    for tf in TIMEFRAMES:
+        frames_raw[tf] = download_data(symbol, tf)
+        frames[tf] = add_indicators(frames_raw[tf], tf) if not frames_raw[tf].empty else pd.DataFrame()
+
+entry_data = frames.get(entry_tf, pd.DataFrame())
+model, model_stats = (None, {"samples": 0, "holdout_win_rate": None, "holdout_accuracy": None, "holdout_brier": None})
+if not entry_data.empty and len(entry_data) >= 280:
+    model, model_stats = train_brain_cached(symbol, entry_tf, str(entry_data.index[-1]), entry_data.iloc[:-1].copy())
 
 # Auto refresh only while the Streamlit page is open. The app does not run in the background when closed.
 refresh_count = st_autorefresh(interval=60_000, limit=None, key="brain_v2_refresh")
-frames = all_market_frames.get(market_name, {})
-frames_raw = {tf: download_data(symbol, tf) for tf in TIMEFRAMES}
-entry_data = frames.get(entry_tf, pd.DataFrame())
-model, model_stats = models_by_market.get(market_name, (None, {"samples": 0, "holdout_win_rate": None, "holdout_accuracy": None, "holdout_brier": None}))
+scan_and_trade(market_name, symbol, entry_tf, frames, model, model_stats, state,
+               probability_threshold, risk_pct, max_daily_loss_pct, max_trades_per_day)
 save_state()
 
 # Account summary
@@ -523,15 +458,6 @@ m2.metric("Open paper positions", str(len(state["open_positions"])))
 m3.metric("Paper trades today", f"{state['trades_today']}/{max_trades_per_day}")
 m4.metric("Today's drawdown", f"{loss_today:.2f}%")
 m5.metric("Auto mode", "ON" if loss_today < max_daily_loss_pct else "DAILY LIMIT")
-
-st.subheader("🌐 All-symbol market scanner — live AI estimates + historical paper win rate")
-scan_table = pd.DataFrame(scan_rows)
-if not scan_table.empty:
-    # Keep the most decision-useful columns visible on a phone; users can scroll horizontally.
-    st.dataframe(scan_table, use_container_width=True, hide_index=True)
-    st.caption("AI Win Estimate % is the model's estimated chance of reaching TP1 before the initial stop in its training-label horizon. Paper Win Rate % is calculated only from this bot's CLOSED simulated trades for that symbol; it shows — until closed trades exist. These are different metrics, neither guarantees future results. Automatic paper trading scans all listed symbols using the selected entry timeframe.")
-else:
-    st.info("Scanner is waiting for market data.")
 
 st.subheader("AI Brain — win probability")
 if model is None:
@@ -616,62 +542,20 @@ if state.get("events"):
 else:
     st.caption("No events yet. Automatic paper entries are enabled when AI probability is above 60% and all hard filters pass.")
 
-st.subheader("📚 Trade History — all symbols")
-st.caption("One row per paper trade. Open positions update to CLOSED when the bot records an exit. History is simulated only.")
 if TRADE_LOG.exists():
+    st.subheader("Paper trade history")
     try:
-        raw_history = pd.read_csv(TRADE_LOG)
-        if not raw_history.empty:
-            # A trade is logged at entry and again at exit. Keep the latest record per TradeID.
-            # Older records without TradeID remain visible for backwards compatibility.
-            if "TradeID" in raw_history.columns:
-                with_id = raw_history[raw_history["TradeID"].notna() & raw_history["TradeID"].astype(str).ne("")].copy()
-                without_id = raw_history[raw_history["TradeID"].isna() | raw_history["TradeID"].astype(str).eq("")].copy()
-                if not with_id.empty:
-                    with_id["_sort_time"] = with_id.get("Closed", pd.Series(index=with_id.index, dtype=object)).fillna(with_id.get("Opened", pd.Series(index=with_id.index, dtype=object)))
-                    with_id = with_id.sort_values("_sort_time").drop_duplicates("TradeID", keep="last").drop(columns=["_sort_time"], errors="ignore")
-                history = pd.concat([without_id, with_id], ignore_index=True, sort=False)
-            else:
-                history = raw_history.copy()
-
-            if "Status" not in history:
-                history["Status"] = "UNKNOWN"
-            history["Status"] = history["Status"].fillna("UNKNOWN").astype(str).str.upper()
-            if "PnL_virtual" not in history:
-                history["PnL_virtual"] = np.nan
-            history["PnL_virtual"] = pd.to_numeric(history["PnL_virtual"], errors="coerce")
-            closed_history = history[history["Status"].eq("CLOSED")].copy()
-            wins = int((closed_history["PnL_virtual"] > 0).sum()) if not closed_history.empty else 0
-            closed_count = int(closed_history["PnL_virtual"].notna().sum())
-            win_rate = (wins / closed_count * 100) if closed_count else None
-            total_pnl = float(closed_history["PnL_virtual"].sum()) if closed_count else 0.0
-            open_count = int(history["Status"].eq("OPEN").sum())
-            h1, h2, h3, h4 = st.columns(4)
-            h1.metric("Recorded trades", str(len(history)))
-            h2.metric("Open trades", str(open_count))
-            h3.metric("Closed-trade win rate", f"{win_rate:.1f}%" if win_rate is not None else "—")
-            h4.metric("Closed virtual P&L", f"₹{total_pnl:,.2f}")
-
-            markets_in_history = sorted(history["Market"].dropna().astype(str).unique().tolist()) if "Market" in history else []
-            f1, f2 = st.columns(2)
-            selected_markets = f1.multiselect("Filter markets", markets_in_history, default=markets_in_history, key="history_markets_filter")
-            statuses = sorted(history["Status"].dropna().astype(str).unique().tolist())
-            selected_statuses = f2.multiselect("Filter status", statuses, default=statuses, key="history_status_filter")
-            filtered = history.copy()
-            if "Market" in filtered:
-                filtered = filtered[filtered["Market"].astype(str).isin(selected_markets)]
-            filtered = filtered[filtered["Status"].astype(str).isin(selected_statuses)]
-            # Friendly column order first; retain any additional diagnostic fields after these.
-            preferred = ["TradeID", "Opened", "Closed", "Market", "Symbol", "Timeframe", "Side", "AI_Win_Probability_pct", "Entry", "InitialStop", "Stop", "TP1", "TP2", "TP1_Hit", "Exit", "ExitReason", "Qty", "Status", "PnL_virtual"]
-            display_cols = [c for c in preferred if c in filtered.columns] + [c for c in filtered.columns if c not in preferred]
-            st.dataframe(filtered[display_cols].sort_values("Opened", ascending=False, na_position="last") if "Opened" in filtered.columns else filtered[display_cols].iloc[::-1], use_container_width=True, hide_index=True)
-            st.download_button("⬇️ Download filtered trade history (CSV)", filtered.to_csv(index=False).encode("utf-8"), "brain_ai_v2_trade_history.csv", "text/csv", use_container_width=True)
-        else:
-            st.info("No paper trades have been recorded yet. The history table will populate when the bot opens its first paper trade.")
+        history = pd.read_csv(TRADE_LOG)
+        if not history.empty:
+            closed_trades = history[history.get("Status", pd.Series(index=history.index, dtype=str)).eq("CLOSED")] if "Status" in history else pd.DataFrame()
+            if not closed_trades.empty and "PnL_virtual" in closed_trades:
+                wins = int((pd.to_numeric(closed_trades["PnL_virtual"], errors="coerce") > 0).sum())
+                total = len(closed_trades)
+                st.metric("Closed paper-trade win rate", f"{100*wins/total:.1f}%", help="Historical simulated results only; not a prediction or guarantee.")
+            st.dataframe(history.iloc[::-1].head(100), use_container_width=True, hide_index=True)
+            st.download_button("Download paper trade CSV", history.to_csv(index=False).encode("utf-8"), "brain_ai_v2_paper_trades.csv", "text/csv")
     except Exception as exc:
         st.warning(f"Could not read paper history: {exc}")
-else:
-    st.info("No paper trades have been recorded yet. The history table will populate when the bot opens its first paper trade.")
 
 st.divider()
 st.caption("Safety: paper-only, virtual INR balance, no broker credentials or live order route. This bot is a research prototype, not financial advice. Data vendor delays, missing volume, spread, slippage, commissions, swap/funding, and instrument contract sizes can materially change results. Keep the page open for auto scans; it does not run in the background when closed.")

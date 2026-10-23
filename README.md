@@ -1,28 +1,37 @@
-# Brain AI Trading Bot V2 — Android-friendly web app
+# Brain AI Trading Bot V2 — Android/mobile edition
 
-## What changed in this version
-- Scans all configured markets in one mobile-friendly table: Gold/XAUUSD proxy, US Oil/WTI proxy, EURUSD, GBPUSD, USDJPY, AUDUSD, BTCUSD, ETHUSD and SOLUSD.
-- Shows H1/M30/M15 trend, AI BUY/SELL estimates, best-side estimate, historical closed paper-trade win rate, number of closed trades, and scanner status.
-- Includes an all-symbol Trade History table with trade ID, open/close timestamps, side, timeframe, entry/SL/TP levels, TP1 status, exit reason, virtual P&L, open/closed status, market/status filters, and CSV export.
-- Trade entries and exit records are combined by Trade ID for a single row per trade in the history view; older log rows remain viewable.
-- Automatic paper trading is enabled for every listed symbol when the AI estimate is strictly above 60% and all configured filters pass.
-- Daily loss limit: 3% of virtual account starting balance for the day.
-- Default virtual risk budget per new trade: 0.5%; maximum 20 new paper trades per day across all symbols.
-- On TP1, closes 60% and moves the remaining stop to break-even plus an ATR buffer; TP2 closes the remaining 40%.
-- Uses 5m, 15m, 30m and 1h data. The selected entry timeframe applies to the all-symbol scanner.
-- Paper only: no broker connection and no real-money orders.
+## Changes in this edition
+- Removed the Bot Controls sidebar, Start/Pause buttons, Confirm Settings, and Reset Account button.
+- Automatic paper mode starts when the app opens.
+- Daily loss stop is fixed at **3%** of the virtual account's start-of-day balance. When reached, new paper entries are blocked until the next day; existing positions continue to be managed.
+- Fixed AI probability threshold: strictly greater than 60%.
+- Fixed virtual risk budget: 0.5% per trade; maximum 20 new paper trades per day.
+- Mobile-friendly centered layout for Android browser screens.
+- Select market and entry timeframe at the top of the page. H1/M30/M15 are still used for trend/setup confirmation.
 
-## Metrics are not the same
-- **AI Win Estimate %** is a model estimate based on historical labels; it is not a measured live win rate.
-- **Paper Win Rate %** is calculated only from closed simulated trades for that market. It remains blank until there are closed paper trades.
-- Neither metric guarantees future results. Backtest/forward-test and inspect transaction costs before considering any real trading.
+## Important: using an Android phone
+This is a Python Streamlit web app, not a native Android APK. The `.bat` installer works on Windows only. To use it from your Android phone, deploy the project to a cloud Streamlit host using a GitHub repository, then open the provided web address in Chrome.
 
-## Run on Android
-This is a Streamlit web application, not an APK. Deploy `app.py` and `requirements.txt` using Streamlit Community Cloud connected to a GitHub repository, then open the deployed app URL in Chrome. Use Chrome's menu > Add to Home screen for an app-like shortcut.
+### Deployment steps from Android
+1. Sign in to GitHub in your phone browser and create a new repository.
+2. Upload `app.py` and `requirements.txt` from this ZIP to the repository root.
+3. Open Streamlit Community Cloud in your browser, connect GitHub, and choose that repository, `app.py` as the main file, then deploy.
+4. Open the deployed app URL on your Android phone and use **Add to Home screen** in Chrome if you want an app-like shortcut.
 
-## Important operational limits
-- The trade log is written to a local CSV. On ephemeral cloud hosting, history may be lost after a restart/redeploy unless you configure persistent storage or periodically download the CSV.
-- The scanner refreshes while the page/session is active; it is not guaranteed to run when the browser or cloud app is sleeping.
-- The included symbols are Yahoo Finance data symbols/proxies, not necessarily the exact CFD price/contract available at a broker. Gold uses `GC=F`; US Oil uses `CL=F`.
-- Yahoo Finance may not provide sufficient intraday history for every symbol/timeframe. Those rows may show NO DATA or TRAINING.
-- Paper state/logs may not persist permanently on ephemeral cloud hosting unless persistent storage is configured.
+Cloud-hosted filesystems may reset or be ephemeral, and free hosting may sleep. Do not assume paper-trade history/state will persist permanently. The app only updates while the web session is active; it is not a guaranteed always-on service. For durable logs, add a persistent database before relying on long-running paper tests.
+
+## Features
+- Timeframes: 5m, 15m, 30m, 1h.
+- EMA 9/21/50/200, Bollinger Bands, ATR, ADX with +DI/-DI, RSI, VWAP, MFI, volume/relative volume.
+- Adaptive support/resistance and ATR-buffered power channel.
+- Random Forest machine-learning model trained on historical candles.
+- Automatic paper BUY/SELL entries when estimated probability is >60% and hard filters pass.
+- TP1 books 60%; remaining 40% stop moves to break-even + 0.05 ATR; TP2 closes remaining 40%.
+- Virtual account, trade log, charts, AI estimates, and historical paper-trade win rate.
+
+## Limitations and safety
+- Paper trading only; no broker or exchange connection and no real-money orders.
+- A displayed AI probability is not a verified future win rate or guarantee. Backtest and forward-test before making decisions.
+- Yahoo Finance is a research feed, not a broker-grade execution feed. Intraday history can be limited.
+- Gold/oil use futures proxies (`GC=F`, `CL=F`), which can differ from broker CFD prices. Forex volume is not centralized.
+- Position sizing is simplified and not contract-, lot-, tick-value-, or broker-aware.
