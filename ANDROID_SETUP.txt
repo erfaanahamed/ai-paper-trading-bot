@@ -1,0 +1,10 @@
+ANDROID QUICK GUIDE
+
+This project is a Streamlit web app, not an APK. You cannot run install_and_run.bat on Android.
+
+1) From your phone browser, create a GitHub repository.
+2) Upload app.py and requirements.txt.
+3) In Streamlit Community Cloud, deploy the GitHub repository with app.py as the entrypoint.
+4) Open the deployed URL on your phone. In Chrome menu, choose Add to Home screen for an app-like shortcut.
+
+Cloud hosting may sleep and its local files may not persist. This version is paper trading only and must not be treated as a continuously running trading service.
