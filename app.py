@@ -265,8 +265,8 @@ def scan_all_market_signals():
             htf_processed = add_adaptive_levels(add_indicators(htf_market), config["htf"]) if not htf_market.empty else htf_market
             bias_value, _ = htf_bias(htf_processed) if not htf_processed.empty else ("Unknown", None)
             last_row = market_data.iloc[-1]
-            best_side, best_score, _, hard_pass = score_signal(last_row, bias_value, threshold=78)
-            signal_value = best_side if best_side in ("BUY", "SELL") and hard_pass else "WAIT"
+            best_side, best_score, _ = score_signal(last_row, bias_value, threshold=78)
+            signal_value = best_side if best_side in ("BUY", "SELL") else "WAIT"
             rows.append({
                 "Market": name, "Symbol": config["symbol"], "TF": tf,
                 "Last close": round(float(last_row["Close"]), 5),
@@ -667,7 +667,7 @@ elif daily_loss_reached:
     st.session_state.halted = True
     side = "WAIT"
     checks = {"Daily loss limit reached": True}
-st.subheader(f"{market_name} — {signal_tf} signal")
+st.markdown(f"**Selected market: {market_name} · Timeframe: {signal_tf} · Signal**")
 m1,m2,m3,m4,m5 = st.columns(5)
 m1.metric("Last candle close", f"{float(last['Close']):,.5f}")
 m2.metric("HTF bias", bias)
@@ -685,8 +685,30 @@ else:
     st.warning(f"WAIT — no setup passed all hard filters. Best-side rule-fit score: {score}/100.")
 
 st.subheader("Automatic paper trading")
-st.caption("Paper trading only. Automatic scanning is enabled by default and checks the selected market about every 60 seconds while this page stays open and connected. Cloud sleep, browser disconnection, or provider delays can interrupt scans.")
-st.success("Automatic paper scanner: RUNNING")
+st.caption("Paper trading only. The scanner checks the selected market about every 60 seconds while this page stays open and connected. Pause/Stop prevents new scheduled scans; it does not connect to a broker or send real orders.")
+status_cols = st.columns(3)
+with status_cols[0]:
+    if st.button("▶️ Start", use_container_width=True):
+        st.session_state.auto_bot_status = "RUNNING"
+        st.session_state.auto_last_refresh_count = auto_refresh_count
+        st.rerun()
+with status_cols[1]:
+    if st.button("⏸️ Pause", use_container_width=True):
+        st.session_state.auto_bot_status = "PAUSED"
+        st.session_state.auto_last_refresh_count = auto_refresh_count
+        st.rerun()
+with status_cols[2]:
+    if st.button("⏹️ Stop", use_container_width=True):
+        st.session_state.auto_bot_status = "STOPPED"
+        st.session_state.auto_last_refresh_count = auto_refresh_count
+        st.rerun()
+
+if st.session_state.auto_bot_status == "RUNNING":
+    st.success("Paper scanner status: RUNNING")
+elif st.session_state.auto_bot_status == "PAUSED":
+    st.warning("Paper scanner status: PAUSED")
+else:
+    st.error("Paper scanner status: STOPPED")
 
 
 def run_selected_market_scan():

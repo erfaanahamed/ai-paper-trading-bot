@@ -1,21 +1,19 @@
-# AI Paper Trading Brain — No SMC, No Start/Pause/Stop Buttons
+# AI Paper Trading Brain — Fixed Controls / No SMC
 
-Changes:
-- Reduced oversized selected-market metric text to compact labels and values.
-- Removed SMC-specific signal conditions, chart markers, SMC status table, and SMC columns from recent candles.
-- Signal scoring uses standard indicators and price-action filters only.
-- Removed Start, Pause, and Stop buttons.
-- Automatic paper scanning is enabled by default while the app remains open and connected.
-- Kept the manual “Scan market & manage paper positions now” action.
-- Python syntax compilation passed.
+Included:
+- `app.py`: fixes the all-market score function unpacking error.
+- Adds Start, Pause, and Stop controls for scheduled automatic paper scans.
+- Replaces the oversized selected-market heading with normal-sized bold text.
+- The uploaded source contains no SMC-specific labels or SMC implementation.
 
-Deploy:
-1. Replace `app.py` in the existing GitHub repository on the `main` branch with this file and commit.
-2. Keep `requirements.txt` aligned with this version.
-3. Wait for Streamlit Community Cloud to redeploy, then refresh the app.
-4. Verify market data and paper-trading behavior.
+## Deploy
+1. Extract this ZIP.
+2. Replace `app.py` in your GitHub repository with the included file.
+3. Ensure `requirements.txt` matches the included file.
+4. Commit to the `main` branch.
+5. Wait for Streamlit Community Cloud to redeploy, then reload the app.
 
 Important:
-- Paper-only; no broker or live orders are connected.
-- Removing SMC changes signal logic. Test with historical backtesting before relying on results.
-- Automatic scans require the app page to remain open and connected; cloud sleep/provider interruptions may stop them.
+- These controls operate the paper scanner only. No live broker orders are connected.
+- Yahoo Finance may still return unavailable data for some symbols/timeframes. The unpacking bug fix does not guarantee data availability.
+- Backtest and paper P&L figures are approximate, not a guarantee of future results.
