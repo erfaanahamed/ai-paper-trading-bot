@@ -265,8 +265,8 @@ def scan_all_market_signals():
             htf_processed = add_adaptive_levels(add_indicators(htf_market), config["htf"]) if not htf_market.empty else htf_market
             bias_value, _ = htf_bias(htf_processed) if not htf_processed.empty else ("Unknown", None)
             last_row = market_data.iloc[-1]
-            best_side, best_score, _ = score_signal(last_row, bias_value, threshold=78)
-            signal_value = best_side if best_side in ("BUY", "SELL") else "WAIT"
+            best_side, best_score, _, hard_pass = score_signal(last_row, bias_value, threshold=78)
+            signal_value = best_side if best_side in ("BUY", "SELL") and hard_pass else "WAIT"
             rows.append({
                 "Market": name, "Symbol": config["symbol"], "TF": tf,
                 "Last close": round(float(last_row["Close"]), 5),
@@ -574,18 +574,33 @@ st.title("🧠 AI Brain — Paper Trading Lab")
 st.caption("Rule-based scoring with standard indicators + multi-timeframe filters + automatic simulated trade entry/exit. Paper trading only; no broker, wallet, or live-order connection.")
 with st.sidebar:
     st.header("Bot settings")
-    market_name = st.selectbox("Market", list(MARKETS.keys()))
-    cfg = MARKETS[market_name]
-    allowed_tfs = cfg["allowed_tfs"]
-    default_tf = cfg["signal_tf"]
-    signal_tf = st.selectbox("Signal timeframe", allowed_tfs, index=allowed_tfs.index(default_tf))
-    htf_tf = st.selectbox("Higher-timeframe filter", ["1h","4h"], index=1)
-    score_threshold = st.slider("Minimum rule-fit score", 50, 95, 78, 1)
-    risk_pct = st.slider("Risk per trade (%)", 0.25, 1.0, 0.5, 0.25)
-    max_daily_loss = st.slider("Daily loss stop (%)", 1.0, 3.0, 2.0, 0.5)
-    max_trades_per_day = st.slider("Maximum paper trades per day", 1, 30, 20, 1)
-    rr2 = st.slider("TP2 risk/reward", 1.5, 2.5, 2.0, 0.1)
-    st.caption("Score is not a win probability. Test before relying on it.")
+    # Keep changes staged until the user explicitly confirms them.
+    with st.form("bot_settings_form"):
+        market_name = st.selectbox("Market", list(MARKETS.keys()), key="settings_market")
+        cfg = MARKETS[market_name]
+        allowed_tfs = cfg["allowed_tfs"]
+        default_tf = cfg["signal_tf"]
+        current_tf = st.session_state.get("settings_signal_tf")
+        tf_index = allowed_tfs.index(current_tf) if current_tf in allowed_tfs else allowed_tfs.index(default_tf)
+        signal_tf = st.selectbox("Signal timeframe", allowed_tfs, index=tf_index, key="settings_signal_tf_widget")
+        htf_tf = st.selectbox("Higher-timeframe filter", ["15m", "30m", "1h", "4h"], index=3, key="settings_htf_tf")
+        score_threshold = st.slider("Minimum rule-fit score", 50, 95, 78, 1, key="settings_score_threshold")
+        risk_pct = st.slider("Risk per trade (%)", 0.25, 1.0, 0.5, 0.25, key="settings_risk_pct")
+        max_daily_loss = st.slider("Daily loss stop (%)", 1.0, 3.0, 2.0, 0.5, key="settings_max_daily_loss")
+        max_trades_per_day = st.slider("Maximum paper trades per day", 1, 30, 20, 1, key="settings_max_trades_per_day")
+        rr2 = st.slider("TP2 risk/reward", 1.5, 2.5, 2.0, 0.1, key="settings_rr2")
+        confirm_settings = st.form_submit_button("✅ Confirm settings", type="primary", use_container_width=True)
+    if confirm_settings:
+        st.session_state.settings_market_applied = market_name
+        st.session_state.settings_signal_tf = signal_tf
+        st.session_state.settings_htf_tf_applied = htf_tf
+        st.session_state.settings_score_threshold_applied = score_threshold
+        st.session_state.settings_risk_pct_applied = risk_pct
+        st.session_state.settings_max_daily_loss_applied = max_daily_loss
+        st.session_state.settings_max_trades_per_day_applied = max_trades_per_day
+        st.session_state.settings_rr2_applied = rr2
+        st.success("Settings confirmed for this session.")
+    st.caption("Changes apply when you tap Confirm settings. Score is not a win probability.")
 
 if "balance" not in st.session_state:
     st.session_state.balance = STARTING_BALANCE
@@ -667,7 +682,7 @@ elif daily_loss_reached:
     st.session_state.halted = True
     side = "WAIT"
     checks = {"Daily loss limit reached": True}
-st.markdown(f"**Selected market: {market_name} · Timeframe: {signal_tf} · Signal**")
+st.subheader(f"{market_name} — {signal_tf} signal")
 m1,m2,m3,m4,m5 = st.columns(5)
 m1.metric("Last candle close", f"{float(last['Close']):,.5f}")
 m2.metric("HTF bias", bias)
@@ -685,30 +700,8 @@ else:
     st.warning(f"WAIT — no setup passed all hard filters. Best-side rule-fit score: {score}/100.")
 
 st.subheader("Automatic paper trading")
-st.caption("Paper trading only. The scanner checks the selected market about every 60 seconds while this page stays open and connected. Pause/Stop prevents new scheduled scans; it does not connect to a broker or send real orders.")
-status_cols = st.columns(3)
-with status_cols[0]:
-    if st.button("▶️ Start", use_container_width=True):
-        st.session_state.auto_bot_status = "RUNNING"
-        st.session_state.auto_last_refresh_count = auto_refresh_count
-        st.rerun()
-with status_cols[1]:
-    if st.button("⏸️ Pause", use_container_width=True):
-        st.session_state.auto_bot_status = "PAUSED"
-        st.session_state.auto_last_refresh_count = auto_refresh_count
-        st.rerun()
-with status_cols[2]:
-    if st.button("⏹️ Stop", use_container_width=True):
-        st.session_state.auto_bot_status = "STOPPED"
-        st.session_state.auto_last_refresh_count = auto_refresh_count
-        st.rerun()
-
-if st.session_state.auto_bot_status == "RUNNING":
-    st.success("Paper scanner status: RUNNING")
-elif st.session_state.auto_bot_status == "PAUSED":
-    st.warning("Paper scanner status: PAUSED")
-else:
-    st.error("Paper scanner status: STOPPED")
+st.caption("Paper trading only. Automatic scanning is enabled by default and checks the selected market about every 60 seconds while this page stays open and connected. Cloud sleep, browser disconnection, or provider delays can interrupt scans.")
+st.success("Automatic paper scanner: RUNNING")
 
 
 def run_selected_market_scan():
