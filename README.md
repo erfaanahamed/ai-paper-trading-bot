@@ -1,14 +1,20 @@
-# AI Paper Trading Bot — Higher-Timeframe Options Update
+AI Paper Trading Brain — Bug Fix
 
-This package contains the full `app.py` file, dependencies, and deployment notes.
+Fixes:
+- Fixed the all-market dashboard unpacking error. score_signal() returns three values, not four.
+- Changed the selected-market title to normal-sized text.
+- Kept the Confirm settings button.
+- Kept higher-timeframe options: 15m, 30m, 1h, and 4h.
+- Kept this app paper-only; no broker/live orders are connected.
 
-Change included: the Higher-timeframe filter dropdown now offers **15m, 30m, 1h, and 4h**.
+Deploy:
+1. Replace app.py and requirements.txt in your GitHub repository with these files.
+2. Commit the changes to the branch used by Streamlit Cloud.
+3. Wait for the app to redeploy, then reload the page.
+4. Check whether the dashboard reports usable market data.
 
-## Deploy
-1. Download and extract this ZIP.
-2. Replace `app.py` in your GitHub repository (`main` branch) with the included `app.py`.
-3. Verify `requirements.txt` contains the listed packages.
-4. Commit the changes and wait for Streamlit Community Cloud to redeploy.
-5. Reload the app, open Bot settings, choose the higher-timeframe filter, and tap **Confirm settings**.
-
-Note: this remains a paper-trading app. Adding timeframes to the dropdown does not guarantee trades or improve performance by itself. Other filters can still reject entries, and data availability depends on Yahoo Finance.
+Notes:
+- A WAIT signal is normal when the strategy's filters are not all satisfied.
+- Rule-fit score is not a win probability.
+- Yahoo Finance may still return unavailable data for some symbols/timeframes.
+- This code passed an in-memory Python syntax compilation check; hosted runtime/data access has not been tested here.
