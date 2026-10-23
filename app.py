@@ -16,17 +16,17 @@ st.set_page_config(page_title="AI Paper Trading Brain", page_icon="🧠", layout
 # -----------------------------
 STARTING_BALANCE = 100_000.0  # INR virtual balance
 MARKETS = {
-    "Gold (XAUUSD)": {"symbol": "GC=F", "signal_tf": "5m", "allowed_tfs": ["5m", "15m", "30m", "1h", "4h"], "htf": "4h", "kind": "gold"},
-    "US Oil (WTI proxy)": {"symbol": "CL=F", "signal_tf": "15m", "allowed_tfs": ["15m", "30m", "1h", "4h"], "htf": "4h", "kind": "oil"},
-    "EUR/USD": {"symbol": "EURUSD=X", "signal_tf": "15m", "allowed_tfs": ["15m", "30m", "1h", "4h"], "htf": "4h", "kind": "forex"},
-    "GBP/USD": {"symbol": "GBPUSD=X", "signal_tf": "15m", "allowed_tfs": ["15m", "30m", "1h", "4h"], "htf": "4h", "kind": "forex"},
-    "AUD/USD": {"symbol": "AUDUSD=X", "signal_tf": "15m", "allowed_tfs": ["15m", "30m", "1h", "4h"], "htf": "4h", "kind": "forex"},
-    "USD/JPY": {"symbol": "JPY=X", "signal_tf": "15m", "allowed_tfs": ["15m", "30m", "1h", "4h"], "htf": "4h", "kind": "forex"},
-    "BTC/USD": {"symbol": "BTC-USD", "signal_tf": "15m", "allowed_tfs": ["15m", "30m", "1h", "4h"], "htf": "4h", "kind": "crypto"},
-    "SOL/USD": {"symbol": "SOL-USD", "signal_tf": "15m", "allowed_tfs": ["15m", "30m", "1h", "4h"], "htf": "4h", "kind": "crypto"},
-    "ETH/USD": {"symbol": "ETH-USD", "signal_tf": "15m", "allowed_tfs": ["15m", "30m", "1h", "4h"], "htf": "4h", "kind": "crypto"},
+    "Gold (XAUUSD)": {"symbol": "GC=F", "signal_tf": "5m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "4h", "kind": "gold"},
+    "US Oil (WTI proxy)": {"symbol": "CL=F", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "4h", "kind": "oil"},
+    "EUR/USD": {"symbol": "EURUSD=X", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "4h", "kind": "forex"},
+    "GBP/USD": {"symbol": "GBPUSD=X", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "4h", "kind": "forex"},
+    "AUD/USD": {"symbol": "AUDUSD=X", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "4h", "kind": "forex"},
+    "USD/JPY": {"symbol": "JPY=X", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "4h", "kind": "forex"},
+    "BTC/USD": {"symbol": "BTC-USD", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "4h", "kind": "crypto"},
+    "SOL/USD": {"symbol": "SOL-USD", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "4h", "kind": "crypto"},
+    "ETH/USD": {"symbol": "ETH-USD", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "4h", "kind": "crypto"},
 }
-INTERVAL_MAP = {"5m": ("5m", "5d"), "15m": ("15m", "60d"), "30m": ("30m", "60d"), "1h": ("60m", "730d"), "4h": ("60m", "730d")}
+INTERVAL_MAP = {"5m": ("5m", "5d"), "15m": ("15m", "60d"), "30m": ("30m", "60d")}
 
 
 TRADE_LOG_PATH = Path("paper_trade_history.csv")
@@ -155,7 +155,7 @@ def add_indicators(df):
 
 def adaptive_lookback(interval):
     """Choose a support/resistance and power-channel lookback by chart timeframe."""
-    return {"5m": 48, "15m": 40, "30m": 36, "1h": 30, "4h": 24}.get(interval, 40)
+    return {"5m": 48, "15m": 40, "30m": 36}.get(interval, 40)
 
 def add_adaptive_levels(df, interval):
     """Calculate rolling swing levels and an adaptive power channel for the selected timeframe."""
@@ -187,7 +187,7 @@ def htf_bias(htf):
         return "Bearish", last
     return "Mixed", last
 
-def score_signal(last, bias, threshold=70):
+def score_signal(last, bias, threshold=78):
     """Rule-fit score using standard indicators and price-action filters; not a probability."""
     def val(key, default=False):
         v = last.get(key, default)
@@ -257,7 +257,7 @@ def scan_all_market_signals():
                 rows.append({
                     "Market": name, "Symbol": config["symbol"], "TF": tf,
                     "Last close": None, "HTF bias": "Unknown",
-                    "Signal": "DATA UNAVAILABLE", "Trade Quality Score": None,
+                    "Signal": "DATA UNAVAILABLE", "Rule-fit": None,
                     "RSI": None, "ADX": None, "Data status": "Insufficient candles or provider returned no data"
                 })
                 continue
@@ -265,13 +265,13 @@ def scan_all_market_signals():
             htf_processed = add_adaptive_levels(add_indicators(htf_market), config["htf"]) if not htf_market.empty else htf_market
             bias_value, _ = htf_bias(htf_processed) if not htf_processed.empty else ("Unknown", None)
             last_row = market_data.iloc[-1]
-            best_side, best_score, _ = score_signal(last_row, bias_value, threshold=70)
+            best_side, best_score, _ = score_signal(last_row, bias_value, threshold=78)
             signal_value = best_side if best_side in ("BUY", "SELL") else "WAIT"
             rows.append({
                 "Market": name, "Symbol": config["symbol"], "TF": tf,
                 "Last close": round(float(last_row["Close"]), 5),
                 "HTF bias": bias_value, "Signal": signal_value,
-                "Trade Quality Score": int(best_score),
+                "Rule-fit": int(best_score),
                 "RSI": round(float(last_row["RSI"]), 1) if pd.notna(last_row["RSI"]) else None,
                 "ADX": round(float(last_row["ADX"]), 1) if pd.notna(last_row["ADX"]) else None,
                 "Data status": "OK"
@@ -280,7 +280,7 @@ def scan_all_market_signals():
             rows.append({
                 "Market": name, "Symbol": config["symbol"], "TF": tf,
                 "Last close": None, "HTF bias": "Unknown",
-                "Signal": "DATA ERROR", "Trade Quality Score": None,
+                "Signal": "DATA ERROR", "Rule-fit": None,
                 "RSI": None, "ADX": None, "Data status": str(exc)[:120]
             })
     return pd.DataFrame(rows)
@@ -469,7 +469,7 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
             else:
                 events.append("Signal rejected: stop distance was zero.")
     else:
-        events.append(f"No entry: setup did not pass the hard filters (Trade Quality Score {score}/100).")
+        events.append(f"No entry: setup did not pass the hard filters (rule-fit score {score}/100).")
 
     processed[market_key] = bar_time
     st.session_state.auto_last_processed = processed
@@ -489,7 +489,7 @@ def diagnose_backtest_filters(df, htf, timeframe, htf_timeframe, threshold, max_
         "Rejected: HTF bias not aligned": 0,
         "Rejected: ADX hard filter (must be <25)": 0,
         "Rejected: Bollinger close hard filter": 0,
-        "Rejected: Trade Quality Score below threshold": 0,
+        "Rejected: rule-fit score below threshold": 0,
         "Signals passing all filters": 0,
     }
     if len(df) < 250:
@@ -547,7 +547,7 @@ def diagnose_backtest_filters(df, htf, timeframe, htf_timeframe, threshold, max_
             counts["Signals passing all filters"] += 1
             cooldown_until = i + 97
         elif score < threshold:
-            counts["Rejected: Trade Quality Score below threshold"] += 1
+            counts["Rejected: rule-fit score below threshold"] += 1
     return pd.DataFrame([{"Diagnostic": k, "Count": v} for k, v in counts.items()])
 
 
@@ -659,8 +659,8 @@ with st.sidebar:
         current_tf = st.session_state.get("settings_signal_tf")
         tf_index = allowed_tfs.index(current_tf) if current_tf in allowed_tfs else allowed_tfs.index(default_tf)
         signal_tf = st.selectbox("Signal timeframe", allowed_tfs, index=tf_index, key="settings_signal_tf_widget")
-        htf_tf = st.selectbox("Higher-timeframe filter", ["15m", "30m", "1h", "4h"], index=3, key="settings_htf_tf")
-        score_threshold = st.slider("Minimum Trade Quality Score", 50, 95, 70, 1, key="settings_score_threshold")
+        htf_tf = st.selectbox("Higher-timeframe filter", ["5m", "15m", "30m"], index=1, key="settings_htf_tf")
+        score_threshold = st.slider("Minimum rule-fit score", 50, 95, 78, 1, key="settings_score_threshold")
         risk_pct = st.slider("Risk per trade (%)", 0.25, 1.0, 0.5, 0.25, key="settings_risk_pct")
         max_daily_loss = st.slider("Daily loss stop (%)", 1.0, 3.0, 2.0, 0.5, key="settings_max_daily_loss")
         max_trades_per_day = st.slider("Maximum paper trades per day", 1, 30, 20, 1, key="settings_max_trades_per_day")
@@ -676,7 +676,7 @@ with st.sidebar:
         st.session_state.settings_max_trades_per_day_applied = max_trades_per_day
         st.session_state.settings_rr2_applied = rr2
         st.success("Settings confirmed for this session.")
-    st.caption("Changes apply when you tap Confirm settings. Trade Quality Score is a rule-fit score out of 100, not a win-rate percentage or guaranteed probability.")
+    st.caption("Changes apply when you tap Confirm settings. Score is not a win probability.")
 
 if "balance" not in st.session_state:
     st.session_state.balance = STARTING_BALANCE
@@ -762,7 +762,7 @@ st.subheader(f"{market_name} — {signal_tf} signal")
 m1,m2,m3,m4,m5 = st.columns(5)
 m1.metric("Last candle close", f"{float(last['Close']):,.5f}")
 m2.metric("HTF bias", bias)
-m3.metric("AI Trade Quality Score", f"{score}/100")
+m3.metric("AI rule-fit score", f"{score}/100")
 m4.metric("RSI / MFI", f"{last['RSI']:.1f} / {last['MFI']:.1f}" if pd.notna(last["MFI"]) else f"{last['RSI']:.1f} / n/a")
 m5.metric("ADX / Rel. volume", f"{last['ADX']:.1f} / {last['RelVol']:.2f}x" if pd.notna(last["RelVol"]) else f"{last['ADX']:.1f} / n/a")
 
@@ -773,7 +773,7 @@ elif st.session_state.trades_today >= max_trades_per_day:
 elif side in ("BUY","SELL"):
     st.success(f"Potential {side} setup — score {score}/100. This is a paper signal, not a guaranteed trade.")
 else:
-    st.warning(f"WAIT — no setup passed all hard filters. Best-side Trade Quality Score: {score}/100.")
+    st.warning(f"WAIT — no setup passed all hard filters. Best-side rule-fit score: {score}/100.")
 
 st.subheader("Automatic paper trading")
 st.caption("Paper trading only. Automatic scanning is enabled by default and checks the selected market about every 60 seconds while this page stays open and connected. Cloud sleep, browser disconnection, or provider delays can interrupt scans.")
@@ -844,7 +844,7 @@ else:
     levels = None
 
 with st.expander("AI Brain — condition-by-condition explanation", expanded=True):
-    st.write("Trade Quality Score is a weighted rule-fit score out of 100, not a win-rate percentage or calibrated probability of winning. Hard filters still reject a setup if the higher-timeframe bias disagrees, ADX is not ranging, or price has not closed outside the relevant Bollinger Band.")
+    st.write("The score is a weighted rule-fit score, not a calibrated probability of winning. Hard filters reject a setup if the HTF bias disagrees, ADX is not ranging, or price has not closed outside the relevant Bollinger Band.")
     for name, passed in checks.items():
         st.write(("✅ " if passed else "⬜ ") + name)
 
@@ -913,12 +913,14 @@ with st.expander("Backtest (historical, simplified)"):
         elif bt.empty:
             st.warning("No trades passed the filters in the loaded history. Use the diagnostics above to identify the main blocker.")
         else:
+            wins = (bt["PnL (price units)"] > 0).sum()
+            win_rate = 100*wins/len(bt)
             gross_profit = bt.loc[bt["PnL (price units)"]>0,"PnL (price units)"].sum()
             gross_loss = abs(bt.loc[bt["PnL (price units)"]<0,"PnL (price units)"].sum())
             pf = gross_profit/gross_loss if gross_loss else np.inf
             x1,x2,x3,x4 = st.columns(4)
             x1.metric("Trades", len(bt))
-            x2.metric("Minimum Trade Quality Score", f"{score_threshold}/100")
+            x2.metric("Win rate", f"{win_rate:.1f}%")
             x3.metric("Profit factor", f"{pf:.2f}" if np.isfinite(pf) else "∞")
             x4.metric("Final model balance", f"₹{final_balance:,.2f}")
             equity = bt["Balance"]
