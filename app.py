@@ -284,31 +284,56 @@ def scan_all_market_signals():
 
 
 def make_trade_levels(last, side, risk_pct, rr2):
+    """Create strictly ordered, directionally valid SL/TP levels."""
     entry = float(last["Close"])
     atr = float(last["ATR"])
-    if not np.isfinite(atr) or atr <= 0:
+    if not np.isfinite(entry) or not np.isfinite(atr) or atr <= 0:
         return None
-    # Protective stop uses signal candle + ATR buffer; choose wider of the two.
+
+    rr2 = max(float(rr2), 1.5)
     if side == "BUY":
         stop = min(float(last["Low"]), entry - 1.2 * atr)
         risk = entry - stop
-        tp1 = min(float(last["BB_Mid"]), entry + 0.9 * risk) if pd.notna(last["BB_Mid"]) else entry + 0.9*risk
-        tp2_candidates = [entry + rr2*risk]
-        if pd.notna(last["BB_Upper"]):
-            tp2_candidates.append(float(last["BB_Upper"]))
-        if pd.notna(last["Resistance"]):
-            tp2_candidates.append(float(last["Resistance"]))
-        tp2 = min([v for v in tp2_candidates if v > entry] or [entry + rr2*risk])
-    else:
+        if not np.isfinite(risk) or risk <= 0:
+            return None
+        # BUY targets must both be ABOVE entry; TP2 must be beyond TP1.
+        tp1 = entry + 0.9 * risk
+        fallback_tp2 = entry + rr2 * risk
+        candidates = [fallback_tp2]
+        for key in ("BB_Upper", "Resistance"):
+            value = last.get(key, np.nan)
+            if pd.notna(value) and float(value) > tp1:
+                candidates.append(float(value))
+        farther = [v for v in candidates if v > tp1]
+        tp2 = min(farther) if farther else max(fallback_tp2, tp1 + 0.1 * risk)
+        if not (stop < entry < tp1 < tp2):
+            return None
+    elif side == "SELL":
         stop = max(float(last["High"]), entry + 1.2 * atr)
         risk = stop - entry
-        tp1 = max(float(last["BB_Mid"]), entry - 0.9 * risk) if pd.notna(last["BB_Mid"]) else entry - 0.9*risk
-        tp2_candidates = [entry - rr2*risk]
-        if pd.notna(last["BB_Lower"]):
-            tp2_candidates.append(float(last["BB_Lower"]))
-        if pd.notna(last["Support"]):
-            tp2_candidates.append(float(last["Support"]))
-        tp2 = max([v for v in tp2_candidates if v < entry] or [entry - rr2*risk])
+        if not np.isfinite(risk) or risk <= 0:
+            return None
+        # SELL targets must both be BELOW entry; TP2 must be beyond TP1.
+        tp1 = entry - 0.9 * risk
+        fallback_tp2 = entry - rr2 * risk
+        candidates = [fallback_tp2]
+        for key in ("BB_Lower", "Support"):
+            value = last.get(key, np.nan)
+            if pd.notna(value) and float(value) < tp1:
+                candidates.append(float(value))
+        farther = [v for v in candidates if v < tp1]
+        tp2 = max(farther) if farther else min(fallback_tp2, tp1 - 0.1 * risk)
+        if not (tp2 < tp1 < entry < stop):
+            return None
+    else:
+        return None
+    values = (entry, stop, tp1, tp2)
+    if not all(np.isfinite(v) for v in values):
+        return None
+    if side == "BUY" and not (stop < entry < tp1 < tp2):
+        return None
+    if side == "SELL" and not (tp2 < tp1 < entry < stop):
+        return None
     return {"entry": entry, "stop": stop, "tp1": tp1, "tp2": tp2, "risk_per_unit": abs(entry-stop)}
 
 
@@ -434,29 +459,30 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
     if side in ("BUY", "SELL"):
         levels = make_trade_levels(last, side, risk_pct, rr2)
         if levels:
-            entry = float(last["Close"])
+            entry = float(levels["entry"])
             stop = float(levels["stop"])
-            # Re-anchor levels to the signal close for the simulator.
+            # Use the same validated entry and targets from the level calculator.
             risk_unit = abs(entry - stop)
             if risk_unit > 0:
                 risk_cash = balance * risk_pct / 100
                 qty = risk_cash / risk_unit
-                if side == "BUY":
-                    tp1 = min(float(last["BB_Mid"]), entry + 0.9*risk_unit) if pd.notna(last["BB_Mid"]) else entry + 0.9*risk_unit
-                    tp2_candidates = [entry + rr2*risk_unit]
-                    if pd.notna(last.get("BB_Upper", np.nan)): tp2_candidates.append(float(last["BB_Upper"]))
-                    if pd.notna(last.get("Resistance", np.nan)): tp2_candidates.append(float(last["Resistance"]))
-                    tp2 = min([v for v in tp2_candidates if v > entry] or [entry + rr2*risk_unit])
-                else:
-                    tp1 = max(float(last["BB_Mid"]), entry - 0.9*risk_unit) if pd.notna(last["BB_Mid"]) else entry - 0.9*risk_unit
-                    tp2_candidates = [entry - rr2*risk_unit]
-                    if pd.notna(last.get("BB_Lower", np.nan)): tp2_candidates.append(float(last["BB_Lower"]))
-                    if pd.notna(last.get("Support", np.nan)): tp2_candidates.append(float(last["Support"]))
-                    tp2 = max([v for v in tp2_candidates if v < entry] or [entry - rr2*risk_unit])
+                # Use the validated levels returned by make_trade_levels.
+                tp1 = float(levels["tp1"])
+                tp2 = float(levels["tp2"])
+                # Final safety guard: never open a trade with targets on the wrong side.
+                valid_levels = (
+                    stop < entry < tp1 < tp2 if side == "BUY"
+                    else tp2 < tp1 < entry < stop
+                )
+                if not valid_levels:
+                    events.append(f"Rejected {market_name}: invalid stop/target ordering.")
+                    processed[market_key] = bar_time
+                    st.session_state.auto_last_processed = processed
+                    return balance, trades_today, daily_start_balance, open_positions, events, "Invalid trade levels rejected."
                 pos = {
                     "Opened": datetime.now().isoformat(timespec="seconds"), "Market": market_name,
                     "Symbol": symbol, "Timeframe": timeframe, "Side": side, "Score": score,
-                    "Entry": entry, "Stop": stop, "InitialStop": stop, "TP1": tp1, "TP2": tp2,
+                    "Entry": entry, "Stop": stop, "TP1": tp1, "TP2": tp2,
                     "Qty": qty, "RiskBudget": risk_cash, "TP1_Hit": False, "RealizedPnL": 0.0,
                     "Status": "OPEN"
                 }
@@ -723,15 +749,19 @@ if st.button("🔄 Refresh all market data", type="primary"):
     st.cache_data.clear()
 
 st.subheader("🌐 All-market signal dashboard")
-st.caption("Scans each configured market using its default signal timeframe. Results are cached for about 55 seconds to limit provider requests. This dashboard displays signals only; automatic paper-position management below still applies to the selected market.")
-with st.spinner("Scanning configured markets..."):
-    all_market_rows = scan_all_market_signals()
-if not all_market_rows.empty:
-    st.dataframe(all_market_rows, use_container_width=True, hide_index=True)
-    ready_count = int(all_market_rows["Data status"].eq("OK").sum())
-    st.caption(f"Markets with usable data: {ready_count}/{len(MARKETS)}. Yahoo Finance may not provide every symbol/timeframe reliably; unavailable data is shown explicitly.")
+st.caption("Scans every configured market for BUY / SELL / WAIT signals. Automatic paper trading also evaluates all configured markets, not only the market selected in Bot settings.")
+with st.spinner("Scanning all configured markets..."):
+    overview = scan_all_market_signals()
+if not overview.empty:
+    st.dataframe(overview, use_container_width=True, hide_index=True)
+    usable = int((overview["Data status"] == "OK").sum())
+    st.caption(f"Markets with usable data: {usable}/{len(overview)}. Provider data may be delayed or unavailable for some symbols.")
 else:
     st.warning("No market scan results are available yet.")
+
+st.divider()
+st.subheader(f"📊 Detailed chart and indicators: {market_name}")
+st.caption("The Market dropdown selects which market's detailed chart and indicator diagnostics to display. It does not limit automatic paper trading.")
 
 with st.spinner("Downloading selected-market candles and evaluating the AI Brain..."):
     raw = download_data(cfg["symbol"], signal_tf)
@@ -773,33 +803,53 @@ else:
     st.warning(f"WAIT — no setup passed all hard filters. Best-side Signal strength: {score}/100.")
 
 st.subheader("Automatic paper trading")
-st.caption("Paper trading only. Automatic scanning is enabled by default and checks the selected market about every 60 seconds while this page stays open and connected. Cloud sleep, browser disconnection, or provider delays can interrupt scans.")
+st.caption("Paper trading only. Automatic scanning checks all configured markets about every 60 seconds while this page stays open and connected. Cloud sleep, browser disconnection, or provider delays can interrupt scans.")
 st.success("Automatic paper scanner: RUNNING")
 
 
-def run_selected_market_scan():
-    (st.session_state.balance, st.session_state.trades_today,
-     st.session_state.auto_daily_start_balance, st.session_state.auto_open_positions,
-     auto_events, auto_message) = simulate_auto_paper_scan(
-        data, market_name, cfg["symbol"], signal_tf, bias, score_threshold,
-        risk_pct, rr2, st.session_state.balance, st.session_state.trades_today,
-        max_trades_per_day, st.session_state.auto_daily_start_balance,
-        max_daily_loss, st.session_state.auto_open_positions
-    )
-    st.session_state.last_auto_events = auto_events
-    st.session_state.last_auto_message = auto_message
+def run_all_market_scan():
+    all_events = []
+    messages = []
+    # The Market dropdown is for detailed diagnostics only; automatic paper entries
+    # are evaluated independently for every configured market.
+    for scan_name, scan_cfg in MARKETS.items():
+        scan_tf = scan_cfg["signal_tf"]
+        try:
+            scan_raw = download_data(scan_cfg["symbol"], scan_tf)
+            scan_htf_raw = download_data(scan_cfg["symbol"], scan_cfg["htf"])
+            if scan_raw.empty or len(scan_raw) < 60:
+                all_events.append(f"{scan_name}: skipped; insufficient market data.")
+                continue
+            scan_data = add_adaptive_levels(add_indicators(scan_raw), scan_tf)
+            scan_htf = add_adaptive_levels(add_indicators(scan_htf_raw), scan_cfg["htf"]) if not scan_htf_raw.empty else pd.DataFrame()
+            scan_bias, _ = htf_bias(scan_htf) if not scan_htf.empty else ("Unknown", None)
+            (st.session_state.balance, st.session_state.trades_today,
+             st.session_state.auto_daily_start_balance, st.session_state.auto_open_positions,
+             scan_events, scan_message) = simulate_auto_paper_scan(
+                scan_data, scan_name, scan_cfg["symbol"], scan_tf, scan_bias, None,
+                risk_pct, rr2, st.session_state.balance, st.session_state.trades_today,
+                max_trades_per_day, st.session_state.auto_daily_start_balance,
+                max_daily_loss, st.session_state.auto_open_positions
+            )
+            all_events.extend(scan_events)
+            if scan_message:
+                messages.append(f"{scan_name}: {scan_message}")
+        except Exception as exc:
+            all_events.append(f"{scan_name}: scan error: {str(exc)[:100]}")
+    st.session_state.last_auto_events = all_events
+    st.session_state.last_auto_message = "All-market scan completed. " + (" ".join(messages) if messages else "No new entries were opened; see market signals and events.")
 
 # Run once for each 60-second timer tick while the scanner is armed.
 if st.session_state.auto_bot_status == "RUNNING" and auto_refresh_count > st.session_state.auto_last_refresh_count:
     st.session_state.auto_last_refresh_count = auto_refresh_count
-    run_selected_market_scan()
+    run_all_market_scan()
     st.rerun()
 else:
     # Keep the counter in sync while paused/stopped so restarting doesn't replay old ticks.
     st.session_state.auto_last_refresh_count = auto_refresh_count
 
 if st.button("🔎 Scan market & manage paper positions now", type="primary"):
-    run_selected_market_scan()
+    run_all_market_scan()
     st.rerun()
 
 if st.session_state.get("last_auto_message"):
@@ -807,11 +857,42 @@ if st.session_state.get("last_auto_message"):
 for ev in st.session_state.get("last_auto_events", []):
     st.write("• " + ev)
 
-st.markdown("**Open automatic paper positions**")
-if st.session_state.auto_open_positions:
-    st.dataframe(pd.DataFrame(st.session_state.auto_open_positions), use_container_width=True)
+st.markdown("**Open automatic paper positions — all markets**")
+all_open_positions = [
+    p for p in st.session_state.auto_open_positions
+    if p.get("Status", "OPEN") == "OPEN"
+]
+if all_open_positions:
+    # Present one clear Stop-loss column; do not expose the old InitialStop duplicate.
+    display_rows = []
+    for p in all_open_positions:
+        display_rows.append({
+            "Opened": p.get("Opened"),
+            "Market": p.get("Market"),
+            "Symbol": p.get("Symbol"),
+            "Timeframe": p.get("Timeframe"),
+            "Side": p.get("Side"),
+            "Entry": p.get("Entry"),
+            "Stop-loss": p.get("Stop"),
+            "TP1": p.get("TP1"),
+            "TP2": p.get("TP2"),
+            "Quantity": p.get("Qty"),
+            "TP1 hit": p.get("TP1_Hit"),
+            "Realized P&L": p.get("RealizedPnL"),
+            "Status": p.get("Status"),
+        })
+    st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True,
+                 column_config={
+                     "Entry": st.column_config.NumberColumn(format="%.5f"),
+                     "Stop-loss": st.column_config.NumberColumn(format="%.5f"),
+                     "TP1": st.column_config.NumberColumn(format="%.5f"),
+                     "TP2": st.column_config.NumberColumn(format="%.5f"),
+                     "Quantity": st.column_config.NumberColumn(format="%.4f"),
+                     "Realized P&L": st.column_config.NumberColumn(format="%.2f"),
+                 })
+    st.caption("Only one Stop-loss column is shown. After TP1, the active stop may move to the entry price (break-even) according to the bot's management rule.")
 else:
-    st.info("No automatic paper positions are currently open.")
+    st.info("No automatic paper positions are currently open across the configured markets.")
 
 if side in ("BUY","SELL"):
     levels = make_trade_levels(last, side, risk_pct, rr2)
@@ -841,7 +922,7 @@ else:
     levels = None
 
 with st.expander("AI Brain — condition-by-condition explanation", expanded=True):
-    st.write("The score is a weighted Signal strength, not a calibrated probability of winning. Hard filters reject a setup if the HTF bias disagrees, ADX is not ranging, or price has not closed outside the relevant Bollinger Band.")
+    st.write("Directional signals use trend, momentum, DI, VWAP, Bollinger Bands and higher-timeframe alignment. Stop-loss and target levels are validated so BUY targets are above entry and SELL targets are below entry.")
     for name, passed in checks.items():
         st.write(("✅ " if passed else "⬜ ") + name)
 
