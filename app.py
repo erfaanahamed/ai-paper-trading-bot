@@ -176,58 +176,6 @@ def add_adaptive_levels(df, interval):
     x["NearResistance"] = x["Close"] >= (x["Resistance"] - 0.35 * atr)
     return x
 
-def add_smc_features(df):
-    """Rule-based SMC approximations. These are price-action proxies, not verified institutional order data."""
-    if df.empty:
-        return df
-    x = df.copy()
-    # Confirmed swing levels are shifted so current candle does not define its own reference.
-    swing_n = 3
-    x["SwingHigh"] = x["High"].rolling(2*swing_n+1, center=True).max().where(
-        x["High"].eq(x["High"].rolling(2*swing_n+1, center=True).max())).shift(swing_n)
-    x["SwingLow"] = x["Low"].rolling(2*swing_n+1, center=True).min().where(
-        x["Low"].eq(x["Low"].rolling(2*swing_n+1, center=True).min())).shift(swing_n)
-    prev_swing_high = x["SwingHigh"].ffill().shift(1)
-    prev_swing_low = x["SwingLow"].ffill().shift(1)
-    x["BOS_Bull"] = (x["Close"] > prev_swing_high) & prev_swing_high.notna()
-    x["BOS_Bear"] = (x["Close"] < prev_swing_low) & prev_swing_low.notna()
-    # CHOCH proxy: close crosses a swing level against the prior candle's local direction.
-    x["CHOCH_Bull"] = x["BOS_Bull"] & (x["Close"].shift(1) <= prev_swing_high)
-    x["CHOCH_Bear"] = x["BOS_Bear"] & (x["Close"].shift(1) >= prev_swing_low)
-    # Three-candle fair value gap proxy.
-    x["FVG_Bull"] = x["Low"] > x["High"].shift(2)
-    x["FVG_Bear"] = x["High"] < x["Low"].shift(2)
-    x["FVG_Bull_Lower"] = x["High"].shift(2)
-    x["FVG_Bull_Upper"] = x["Low"]
-    x["FVG_Bear_Lower"] = x["High"]
-    x["FVG_Bear_Upper"] = x["Low"].shift(2)
-    # Liquidity sweep: wick crosses a prior swing and close returns inside.
-    x["SweepLow"] = (x["Low"] < prev_swing_low) & (x["Close"] > prev_swing_low) & prev_swing_low.notna()
-    x["SweepHigh"] = (x["High"] > prev_swing_high) & (x["Close"] < prev_swing_high) & prev_swing_high.notna()
-    # Order-block proxy: last opposite candle before a structure break, carried forward briefly.
-    bull_ob_low = pd.Series(np.nan, index=x.index); bull_ob_high = pd.Series(np.nan, index=x.index)
-    bear_ob_low = pd.Series(np.nan, index=x.index); bear_ob_high = pd.Series(np.nan, index=x.index)
-    for i in range(2, len(x)):
-        if bool(x["BOS_Bull"].iloc[i]):
-            candidates = [j for j in range(max(0, i-5), i) if x["Close"].iloc[j] < x["Open"].iloc[j]]
-            if candidates:
-                j = candidates[-1]; bull_ob_low.iloc[i] = x["Low"].iloc[j]; bull_ob_high.iloc[i] = x["High"].iloc[j]
-        if bool(x["BOS_Bear"].iloc[i]):
-            candidates = [j for j in range(max(0, i-5), i) if x["Close"].iloc[j] > x["Open"].iloc[j]]
-            if candidates:
-                j = candidates[-1]; bear_ob_low.iloc[i] = x["Low"].iloc[j]; bear_ob_high.iloc[i] = x["High"].iloc[j]
-    x["BullOB_Low"] = bull_ob_low.ffill(limit=20); x["BullOB_High"] = bull_ob_high.ffill(limit=20)
-    x["BearOB_Low"] = bear_ob_low.ffill(limit=20); x["BearOB_High"] = bear_ob_high.ffill(limit=20)
-    x["InBullOB"] = x["Close"].between(x["BullOB_Low"], x["BullOB_High"])
-    x["InBearOB"] = x["Close"].between(x["BearOB_Low"], x["BearOB_High"])
-    # Premium/discount based on prior rolling dealing range.
-    range_high = x["High"].rolling(50, min_periods=20).max().shift(1)
-    range_low = x["Low"].rolling(50, min_periods=20).min().shift(1)
-    x["DealingMid"] = (range_high + range_low) / 2
-    x["Discount"] = x["Close"] < x["DealingMid"]
-    x["Premium"] = x["Close"] > x["DealingMid"]
-    return x
-
 def htf_bias(htf):
     if htf.empty or len(htf) < 205:
         return "Unknown", None
@@ -239,7 +187,7 @@ def htf_bias(htf):
         return "Bearish", last
     return "Mixed", last
 
-def score_signal(last, bias, threshold=78, use_smc=False):
+def score_signal(last, bias, threshold=78):
     """Rule-fit score using standard indicators and price-action filters; not a probability."""
     def val(key, default=False):
         v = last.get(key, default)
@@ -275,12 +223,10 @@ def score_signal(last, bias, threshold=78, use_smc=False):
         "RSI oversold (<25)": 5, "MFI oversold (<20)": 5, "Close below lower Bollinger Band": 8,
         "Relative volume >= 1.5": 5, "ADX range filter (<25)": 5, "HTF bullish": 10,
         "EMA9 > EMA21": 5, "+DI > -DI": 5, "Below VWAP": 4, "Near support": 7,
-        "Bullish reversal candle": 5, "Low liquidity sweep": 8,
-        "Discount zone": 8,
+        "Bullish reversal candle": 5,
         "RSI overbought (>75)": 5, "MFI overbought (>80)": 5, "Close above upper Bollinger Band": 8,
         "HTF bearish": 10, "EMA9 < EMA21": 5, "-DI > +DI": 5, "Above VWAP": 4, "Near resistance": 7,
-        "Bearish reversal candle": 5, "High liquidity sweep": 8,
-        "Premium zone": 8,
+        "Bearish reversal candle": 5,
     }
     active_long_max = sum(weights[k] for k in long_checks) or 1
     active_short_max = sum(weights[k] for k in short_checks) or 1
@@ -319,8 +265,8 @@ def scan_all_market_signals():
             htf_processed = add_adaptive_levels(add_indicators(htf_market), config["htf"]) if not htf_market.empty else htf_market
             bias_value, _ = htf_bias(htf_processed) if not htf_processed.empty else ("Unknown", None)
             last_row = market_data.iloc[-1]
-            best_side, best_score, _ = score_signal(last_row, bias_value, threshold=78)
-            signal_value = best_side if best_side in ("BUY", "SELL") else "WAIT"
+            best_side, best_score, _, hard_pass = score_signal(last_row, bias_value, threshold=78)
+            signal_value = best_side if best_side in ("BUY", "SELL") and hard_pass else "WAIT"
             rows.append({
                 "Market": name, "Symbol": config["symbol"], "TF": tf,
                 "Last close": round(float(last_row["Close"]), 5),
@@ -529,7 +475,7 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
     st.session_state.auto_last_processed = processed
     return balance, trades_today, daily_start_balance, open_positions, events, "Scan complete."
 
-def run_backtest(df, htf, timeframe, htf_timeframe, threshold, risk_pct, rr2, starting_balance, max_daily_loss_pct, cost_bps=2.0, use_smc=True):
+def run_backtest(df, htf, timeframe, htf_timeframe, threshold, risk_pct, rr2, starting_balance, max_daily_loss_pct, cost_bps=2.0):
     # Simple candle-close signal backtest; next-bar open entry avoids same-close lookahead.
     # Bar-level stop/target ordering is conservative: if stop and target both touched, stop wins.
     if len(df) < 250:
@@ -559,7 +505,7 @@ def run_backtest(df, htf, timeframe, htf_timeframe, threshold, risk_pct, rr2, st
         bias, _ = htf_bias(hslice.tail(500))
         if not all(pd.notna(row.get(k, np.nan)) for k in ["ATR","BB_Mid","BB_Lower","BB_Upper","ADX","RSI","MFI"]):
             continue
-        side, score, _ = score_signal(row, bias, threshold, use_smc=use_smc)
+        side, score, _ = score_signal(row, bias, threshold)
         if side not in ("BUY","SELL"):
             continue
         levels = make_trade_levels(row, side, risk_pct, rr2)
@@ -625,7 +571,7 @@ def run_backtest(df, htf, timeframe, htf_timeframe, threshold, risk_pct, rr2, st
 # UI
 # -----------------------------
 st.title("🧠 AI Brain — Paper Trading Lab")
-st.caption("Rule-based confidence scoring + multi-timeframe filters + automatic simulated trade entry/exit. Paper trading only; no broker, wallet, or live-order connection.")
+st.caption("Rule-based scoring with standard indicators + multi-timeframe filters + automatic simulated trade entry/exit. Paper trading only; no broker, wallet, or live-order connection.")
 with st.sidebar:
     st.header("Bot settings")
     market_name = st.selectbox("Market", list(MARKETS.keys()))
@@ -721,7 +667,7 @@ elif daily_loss_reached:
     st.session_state.halted = True
     side = "WAIT"
     checks = {"Daily loss limit reached": True}
-st.markdown(f"**Selected market:** {market_name} · **Timeframe:** {signal_tf} · **Signal**")
+st.subheader(f"{market_name} — {signal_tf} signal")
 m1,m2,m3,m4,m5 = st.columns(5)
 m1.metric("Last candle close", f"{float(last['Close']):,.5f}")
 m2.metric("HTF bias", bias)

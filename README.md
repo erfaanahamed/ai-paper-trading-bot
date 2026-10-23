@@ -1,15 +1,21 @@
-# AI Paper Trading Brain — Full Files
+# AI Paper Trading Brain — No SMC, No Start/Pause/Stop Buttons
 
-This package contains the full `app.py`, its Python dependencies, and these deployment notes.
+Changes:
+- Reduced oversized selected-market metric text to compact labels and values.
+- Removed SMC-specific signal conditions, chart markers, SMC status table, and SMC columns from recent candles.
+- Signal scoring uses standard indicators and price-action filters only.
+- Removed Start, Pause, and Stop buttons.
+- Automatic paper scanning is enabled by default while the app remains open and connected.
+- Kept the manual “Scan market & manage paper positions now” action.
+- Python syntax compilation passed.
 
-## Deploy on Streamlit Community Cloud
-1. Download and extract this ZIP.
-2. In your GitHub repository, replace `app.py` and `requirements.txt` with the files in this package.
-3. Commit the changes to the `main` branch.
-4. Wait for Streamlit Community Cloud to redeploy, then reload your app.
+Deploy:
+1. Replace `app.py` in the existing GitHub repository on the `main` branch with this file and commit.
+2. Keep `requirements.txt` aligned with this version.
+3. Wait for Streamlit Community Cloud to redeploy, then refresh the app.
+4. Verify market data and paper-trading behavior.
 
-## Notes
-- This app is for paper trading only. It does not connect to a broker, wallet, exchange, private key, or real-money order system.
-- The backtest is simplified and approximate. If it reports no trades, that can mean the entry filters were not met in the loaded historical candles; it does not prove the strategy is profitable or broken.
-- Market prices come from Yahoo Finance and may be delayed, incomplete, or unavailable. Gold uses `GC=F` as a futures proxy, not the exact quote from a broker's XAUUSD CFD.
-- The rule-fit score is not a win probability. Test with out-of-sample data and realistic costs before relying on results.
+Important:
+- Paper-only; no broker or live orders are connected.
+- Removing SMC changes signal logic. Test with historical backtesting before relying on results.
+- Automatic scans require the app page to remain open and connected; cloud sleep/provider interruptions may stop them.
