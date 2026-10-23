@@ -176,58 +176,6 @@ def add_adaptive_levels(df, interval):
     x["NearResistance"] = x["Close"] >= (x["Resistance"] - 0.35 * atr)
     return x
 
-def add_smc_features(df):
-    """Rule-based SMC approximations. These are price-action proxies, not verified institutional order data."""
-    if df.empty:
-        return df
-    x = df.copy()
-    # Confirmed swing levels are shifted so current candle does not define its own reference.
-    swing_n = 3
-    x["SwingHigh"] = x["High"].rolling(2*swing_n+1, center=True).max().where(
-        x["High"].eq(x["High"].rolling(2*swing_n+1, center=True).max())).shift(swing_n)
-    x["SwingLow"] = x["Low"].rolling(2*swing_n+1, center=True).min().where(
-        x["Low"].eq(x["Low"].rolling(2*swing_n+1, center=True).min())).shift(swing_n)
-    prev_swing_high = x["SwingHigh"].ffill().shift(1)
-    prev_swing_low = x["SwingLow"].ffill().shift(1)
-    x["BOS_Bull"] = (x["Close"] > prev_swing_high) & prev_swing_high.notna()
-    x["BOS_Bear"] = (x["Close"] < prev_swing_low) & prev_swing_low.notna()
-    # CHOCH proxy: close crosses a swing level against the prior candle's local direction.
-    x["CHOCH_Bull"] = x["BOS_Bull"] & (x["Close"].shift(1) <= prev_swing_high)
-    x["CHOCH_Bear"] = x["BOS_Bear"] & (x["Close"].shift(1) >= prev_swing_low)
-    # Three-candle fair value gap proxy.
-    x["FVG_Bull"] = x["Low"] > x["High"].shift(2)
-    x["FVG_Bear"] = x["High"] < x["Low"].shift(2)
-    x["FVG_Bull_Lower"] = x["High"].shift(2)
-    x["FVG_Bull_Upper"] = x["Low"]
-    x["FVG_Bear_Lower"] = x["High"]
-    x["FVG_Bear_Upper"] = x["Low"].shift(2)
-    # Liquidity sweep: wick crosses a prior swing and close returns inside.
-    x["SweepLow"] = (x["Low"] < prev_swing_low) & (x["Close"] > prev_swing_low) & prev_swing_low.notna()
-    x["SweepHigh"] = (x["High"] > prev_swing_high) & (x["Close"] < prev_swing_high) & prev_swing_high.notna()
-    # Order-block proxy: last opposite candle before a structure break, carried forward briefly.
-    bull_ob_low = pd.Series(np.nan, index=x.index); bull_ob_high = pd.Series(np.nan, index=x.index)
-    bear_ob_low = pd.Series(np.nan, index=x.index); bear_ob_high = pd.Series(np.nan, index=x.index)
-    for i in range(2, len(x)):
-        if bool(x["BOS_Bull"].iloc[i]):
-            candidates = [j for j in range(max(0, i-5), i) if x["Close"].iloc[j] < x["Open"].iloc[j]]
-            if candidates:
-                j = candidates[-1]; bull_ob_low.iloc[i] = x["Low"].iloc[j]; bull_ob_high.iloc[i] = x["High"].iloc[j]
-        if bool(x["BOS_Bear"].iloc[i]):
-            candidates = [j for j in range(max(0, i-5), i) if x["Close"].iloc[j] > x["Open"].iloc[j]]
-            if candidates:
-                j = candidates[-1]; bear_ob_low.iloc[i] = x["Low"].iloc[j]; bear_ob_high.iloc[i] = x["High"].iloc[j]
-    x["BullOB_Low"] = bull_ob_low.ffill(limit=20); x["BullOB_High"] = bull_ob_high.ffill(limit=20)
-    x["BearOB_Low"] = bear_ob_low.ffill(limit=20); x["BearOB_High"] = bear_ob_high.ffill(limit=20)
-    x["InBullOB"] = x["Close"].between(x["BullOB_Low"], x["BullOB_High"])
-    x["InBearOB"] = x["Close"].between(x["BearOB_Low"], x["BearOB_High"])
-    # Premium/discount based on prior rolling dealing range.
-    range_high = x["High"].rolling(50, min_periods=20).max().shift(1)
-    range_low = x["Low"].rolling(50, min_periods=20).min().shift(1)
-    x["DealingMid"] = (range_high + range_low) / 2
-    x["Discount"] = x["Close"] < x["DealingMid"]
-    x["Premium"] = x["Close"] > x["DealingMid"]
-    return x
-
 def htf_bias(htf):
     if htf.empty or len(htf) < 205:
         return "Unknown", None
@@ -239,8 +187,8 @@ def htf_bias(htf):
         return "Bearish", last
     return "Mixed", last
 
-def score_signal(last, bias, threshold=78, use_smc=True):
-    """Rule-fit score; not a probability. SMC signals are explicit price-action proxies."""
+def score_signal(last, bias, threshold=78):
+    """Rule-fit score using standard indicators and price-action filters; not a probability."""
     def val(key, default=False):
         v = last.get(key, default)
         return bool(v) if pd.notna(v) else False
@@ -256,11 +204,6 @@ def score_signal(last, bias, threshold=78, use_smc=True):
         "Below VWAP": last["Close"] < last["VWAP"],
         "Near support": pd.notna(last.get("Support", np.nan)) and last["Close"] <= last["Support"] + 0.35 * last["ATR"],
         "Bullish reversal candle": val("BullReversal"),
-        "Bullish BOS/CHOCH": val("BOS_Bull") or val("CHOCH_Bull"),
-        "Low liquidity sweep": val("SweepLow"),
-        "Bullish order block": val("InBullOB"),
-        "Bullish FVG": val("FVG_Bull"),
-        "Discount zone": val("Discount"),
     }
     short_checks = {
         "RSI overbought (>75)": last["RSI"] > 75,
@@ -274,37 +217,23 @@ def score_signal(last, bias, threshold=78, use_smc=True):
         "Above VWAP": last["Close"] > last["VWAP"],
         "Near resistance": pd.notna(last.get("Resistance", np.nan)) and last["Close"] >= last["Resistance"] - 0.35 * last["ATR"],
         "Bearish reversal candle": val("BearReversal"),
-        "Bearish BOS/CHOCH": val("BOS_Bear") or val("CHOCH_Bear"),
-        "High liquidity sweep": val("SweepHigh"),
-        "Bearish order block": val("InBearOB"),
-        "Bearish FVG": val("FVG_Bear"),
-        "Premium zone": val("Premium"),
     }
-    if not use_smc:
-        smc_keys = {"Bullish BOS/CHOCH", "Low liquidity sweep", "Bullish order block", "Bullish FVG", "Discount zone", "Bearish BOS/CHOCH", "High liquidity sweep", "Bearish order block", "Bearish FVG", "Premium zone"}
-        long_checks = {k: v for k, v in long_checks.items() if k not in smc_keys}
-        short_checks = {k: v for k, v in short_checks.items() if k not in smc_keys}
     # Category-weighted score, capped at 100; normalize active categories for fair A/B comparison.
     weights = {
         "RSI oversold (<25)": 5, "MFI oversold (<20)": 5, "Close below lower Bollinger Band": 8,
         "Relative volume >= 1.5": 5, "ADX range filter (<25)": 5, "HTF bullish": 10,
         "EMA9 > EMA21": 5, "+DI > -DI": 5, "Below VWAP": 4, "Near support": 7,
-        "Bullish reversal candle": 5, "Bullish BOS/CHOCH": 10, "Low liquidity sweep": 8,
-        "Bullish order block": 5, "Bullish FVG": 5, "Discount zone": 8,
+        "Bullish reversal candle": 5, "Low liquidity sweep": 8,
         "RSI overbought (>75)": 5, "MFI overbought (>80)": 5, "Close above upper Bollinger Band": 8,
         "HTF bearish": 10, "EMA9 < EMA21": 5, "-DI > +DI": 5, "Above VWAP": 4, "Near resistance": 7,
-        "Bearish reversal candle": 5, "Bearish BOS/CHOCH": 10, "High liquidity sweep": 8,
-        "Bearish order block": 5, "Bearish FVG": 5, "Premium zone": 8,
+        "Bearish reversal candle": 5, "High liquidity sweep": 8,
     }
     active_long_max = sum(weights[k] for k in long_checks) or 1
     active_short_max = sum(weights[k] for k in short_checks) or 1
     long_score = min(100, round(100 * sum(weights[k] for k,v in long_checks.items() if v) / active_long_max))
     short_score = min(100, round(100 * sum(weights[k] for k,v in short_checks.items() if v) / active_short_max))
-    # Avoid requiring every rare SMC event; require at least one structure/liquidity confirmation.
-    long_smc = val("BOS_Bull") or val("CHOCH_Bull") or val("SweepLow") or val("InBullOB") or val("FVG_Bull")
-    short_smc = val("BOS_Bear") or val("CHOCH_Bear") or val("SweepHigh") or val("InBearOB") or val("FVG_Bear")
-    long_hard = bias != "Bullish" or not (last["ADX"] < 25) or not (last["Close"] < last["BB_Lower"]) or (use_smc and not long_smc)
-    short_hard = bias != "Bearish" or not (last["ADX"] < 25) or not (last["Close"] > last["BB_Upper"]) or (use_smc and not short_smc)
+    long_hard = bias != "Bullish" or not (last["ADX"] < 25) or not (last["Close"] < last["BB_Lower"])
+    short_hard = bias != "Bearish" or not (last["ADX"] < 25) or not (last["Close"] > last["BB_Upper"])
     if not long_hard and long_score >= threshold:
         return "BUY", int(long_score), long_checks
     if not short_hard and short_score >= threshold:
@@ -332,12 +261,12 @@ def scan_all_market_signals():
                     "RSI": None, "ADX": None, "Data status": "Insufficient candles or provider returned no data"
                 })
                 continue
-            market_data = add_smc_features(add_adaptive_levels(add_indicators(raw_market), tf))
-            htf_processed = add_smc_features(add_adaptive_levels(add_indicators(htf_market), config["htf"])) if not htf_market.empty else htf_market
+            market_data = add_adaptive_levels(add_indicators(raw_market), tf)
+            htf_processed = add_adaptive_levels(add_indicators(htf_market), config["htf"]) if not htf_market.empty else htf_market
             bias_value, _ = htf_bias(htf_processed) if not htf_processed.empty else ("Unknown", None)
             last_row = market_data.iloc[-1]
-            best_side, best_score, _ = score_signal(last_row, bias_value, threshold=78)
-            signal_value = best_side if best_side in ("BUY", "SELL") else "WAIT"
+            best_side, best_score, _, hard_pass = score_signal(last_row, bias_value, threshold=78)
+            signal_value = best_side if best_side in ("BUY", "SELL") and hard_pass else "WAIT"
             rows.append({
                 "Market": name, "Symbol": config["symbol"], "TF": tf,
                 "Last close": round(float(last_row["Close"]), 5),
@@ -546,13 +475,13 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
     st.session_state.auto_last_processed = processed
     return balance, trades_today, daily_start_balance, open_positions, events, "Scan complete."
 
-def run_backtest(df, htf, timeframe, htf_timeframe, threshold, risk_pct, rr2, starting_balance, max_daily_loss_pct, cost_bps=2.0, use_smc=True):
+def run_backtest(df, htf, timeframe, htf_timeframe, threshold, risk_pct, rr2, starting_balance, max_daily_loss_pct, cost_bps=2.0):
     # Simple candle-close signal backtest; next-bar open entry avoids same-close lookahead.
     # Bar-level stop/target ordering is conservative: if stop and target both touched, stop wins.
     if len(df) < 250:
         return pd.DataFrame(), starting_balance, "Need at least 250 bars for a useful backtest."
-    d = add_smc_features(add_adaptive_levels(add_indicators(df), timeframe))
-    ht = add_smc_features(add_adaptive_levels(add_indicators(htf), htf_timeframe)) if not htf.empty else pd.DataFrame()
+    d = add_adaptive_levels(add_indicators(df), timeframe)
+    ht = add_adaptive_levels(add_indicators(htf), htf_timeframe) if not htf.empty else pd.DataFrame()
     if ht.empty:
         return pd.DataFrame(), starting_balance, "Higher-timeframe data unavailable."
     trades = []
@@ -576,7 +505,7 @@ def run_backtest(df, htf, timeframe, htf_timeframe, threshold, risk_pct, rr2, st
         bias, _ = htf_bias(hslice.tail(500))
         if not all(pd.notna(row.get(k, np.nan)) for k in ["ATR","BB_Mid","BB_Lower","BB_Upper","ADX","RSI","MFI"]):
             continue
-        side, score, _ = score_signal(row, bias, threshold, use_smc=use_smc)
+        side, score, _ = score_signal(row, bias, threshold)
         if side not in ("BUY","SELL"):
             continue
         levels = make_trade_levels(row, side, risk_pct, rr2)
@@ -642,7 +571,7 @@ def run_backtest(df, htf, timeframe, htf_timeframe, threshold, risk_pct, rr2, st
 # UI
 # -----------------------------
 st.title("🧠 AI Brain — Paper Trading Lab")
-st.caption("Rule-based confidence scoring + multi-timeframe filters + automatic simulated trade entry/exit. Paper trading only; no broker, wallet, or live-order connection.")
+st.caption("Rule-based scoring with standard indicators + multi-timeframe filters + automatic simulated trade entry/exit. Paper trading only; no broker, wallet, or live-order connection.")
 with st.sidebar:
     st.header("Bot settings")
     market_name = st.selectbox("Market", list(MARKETS.keys()))
@@ -681,7 +610,7 @@ if "auto_last_processed" not in st.session_state:
 if "auto_daily_start_balance" not in st.session_state:
     st.session_state.auto_daily_start_balance = st.session_state.balance
 if "auto_bot_status" not in st.session_state:
-    st.session_state.auto_bot_status = "STOPPED"
+    st.session_state.auto_bot_status = "RUNNING"
 
 # Streamlit reruns the script on this timer while the browser session is connected.
 # Automatic paper scans are gated below so ordinary UI reruns do not trigger new entries.
@@ -719,8 +648,8 @@ else:
 with st.spinner("Downloading selected-market candles and evaluating the AI Brain..."):
     raw = download_data(cfg["symbol"], signal_tf)
     htf = download_data(cfg["symbol"], htf_tf)
-    data = add_smc_features(add_adaptive_levels(add_indicators(raw), signal_tf)) if not raw.empty else pd.DataFrame()
-    htf = add_smc_features(add_adaptive_levels(add_indicators(htf), htf_tf)) if not htf.empty else htf
+    data = add_adaptive_levels(add_indicators(raw), signal_tf) if not raw.empty else pd.DataFrame()
+    htf = add_adaptive_levels(add_indicators(htf), htf_tf) if not htf.empty else htf
     bias, htf_last = htf_bias(htf) if not htf.empty else ("Unknown", None)
 
 if data.empty or len(data) < 60:
@@ -738,7 +667,7 @@ elif daily_loss_reached:
     st.session_state.halted = True
     side = "WAIT"
     checks = {"Daily loss limit reached": True}
-st.markdown(f"**Selected market: {market_name} · Timeframe: {signal_tf} · Signal**")
+st.subheader(f"{market_name} — {signal_tf} signal")
 m1,m2,m3,m4,m5 = st.columns(5)
 m1.metric("Last candle close", f"{float(last['Close']):,.5f}")
 m2.metric("HTF bias", bias)
@@ -756,28 +685,9 @@ else:
     st.warning(f"WAIT — no setup passed all hard filters. Best-side rule-fit score: {score}/100.")
 
 st.subheader("Automatic paper trading")
-st.caption("Paper trading only: no broker, exchange, wallet, or real-money orders. While this page stays open and connected, the selected market is automatically scanned about every 60 seconds when status is RUNNING. Cloud sleep, browser disconnection, and data-provider delays can interrupt scans.")
-status = st.session_state.auto_bot_status
-st.write(f"**Bot status:** `{status}`")
-start_col, pause_col, stop_col = st.columns(3)
-with start_col:
-    if st.button("▶ Start", use_container_width=True, disabled=(status == "RUNNING")):
-        st.session_state.auto_bot_status = "RUNNING"
-        st.rerun()
-with pause_col:
-    if st.button("⏸ Pause", use_container_width=True, disabled=(status != "RUNNING")):
-        st.session_state.auto_bot_status = "PAUSED"
-        st.rerun()
-with stop_col:
-    if st.button("⏹ Stop", use_container_width=True, disabled=(status == "STOPPED")):
-        st.session_state.auto_bot_status = "STOPPED"
-        st.rerun()
-if st.session_state.auto_bot_status == "RUNNING":
-    st.success("Scanner is running. It checks automatically on the 60-second refresh while this page remains open; you can also scan manually.")
-elif st.session_state.auto_bot_status == "PAUSED":
-    st.warning("Scanner is paused. No new scans will run until you press Start. Existing paper positions remain open and are not automatically managed while paused.")
-else:
-    st.info("Scanner is stopped. Existing paper positions remain open; Stop does not close them.")
+st.caption("Paper trading only. Automatic scanning is enabled by default and checks the selected market about every 60 seconds while this page stays open and connected. Cloud sleep, browser disconnection, or provider delays can interrupt scans.")
+st.success("Automatic paper scanner: RUNNING")
+
 
 def run_selected_market_scan():
     (st.session_state.balance, st.session_state.trades_today,
@@ -800,7 +710,7 @@ else:
     # Keep the counter in sync while paused/stopped so restarting doesn't replay old ticks.
     st.session_state.auto_last_refresh_count = auto_refresh_count
 
-if st.button("🔎 Scan market & manage paper positions now", type="primary", disabled=(st.session_state.auto_bot_status != "RUNNING")):
+if st.button("🔎 Scan market & manage paper positions now", type="primary"):
     run_selected_market_scan()
     st.rerun()
 
@@ -847,18 +757,12 @@ with st.expander("AI Brain — condition-by-condition explanation", expanded=Tru
     for name, passed in checks.items():
         st.write(("✅ " if passed else "⬜ ") + name)
 
-st.subheader("Candlestick chart — indicators and SMC")
+st.subheader("Candlestick chart — indicators")
 chart_df = data.tail(180).copy()
 fig = go.Figure(data=[go.Candlestick(x=chart_df.index, open=chart_df["Open"], high=chart_df["High"], low=chart_df["Low"], close=chart_df["Close"], name="Candles")])
 for col, label in [("EMA9","EMA 9"),("EMA21","EMA 21"),("EMA50","EMA 50"),("EMA200","EMA 200"),("BB_Upper","BB Upper"),("BB_Mid","BB Middle"),("BB_Lower","BB Lower"),("Support","Support"),("Resistance","Resistance"),("PowerUpper","Power Upper"),("PowerMid","Power Mid"),("PowerLower","Power Lower")]:
     if col in chart_df:
         fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df[col], mode="lines", name=label, connectgaps=False))
-for col, label, symbol in [("BOS_Bull","Bullish BOS","triangle-up"),("CHOCH_Bull","Bullish CHOCH","triangle-up"),("SweepLow","Low Sweep","circle"),("BOS_Bear","Bearish BOS","triangle-down"),("CHOCH_Bear","Bearish CHOCH","triangle-down"),("SweepHigh","High Sweep","circle")]:
-    if col in chart_df:
-        pts = chart_df[chart_df[col].fillna(False)]
-        if not pts.empty:
-            y = pts["Low"] if "Bull" in col or col == "SweepLow" else pts["High"]
-            fig.add_trace(go.Scatter(x=pts.index, y=y, mode="markers", name=label, marker_symbol=symbol, marker_size=9))
 fig.update_layout(height=620, xaxis_rangeslider_visible=False, legend_orientation="h", margin=dict(l=10,r=10,t=30,b=10))
 # Draw active automatic position levels when they belong to the selected market.
 for pos in st.session_state.auto_open_positions:
@@ -868,14 +772,8 @@ for pos in st.session_state.auto_open_positions:
                 fig.add_hline(y=float(pos[key]), line_dash="dash", annotation_text=label, annotation_position="top left")
 # Re-render after adding trade-level lines.
 st.plotly_chart(fig, use_container_width=True, key="candlestick_chart_with_trade_levels")
-st.caption("SMC markers are algorithmic approximations from OHLC candles; they do not reveal actual institutional orders. Data and indicators can be delayed or incomplete.")
-
-st.subheader("SMC status on latest candle")
-smc_cols = [c for c in ["BOS_Bull","BOS_Bear","CHOCH_Bull","CHOCH_Bear","SweepLow","SweepHigh","InBullOB","InBearOB","FVG_Bull","FVG_Bear","Discount","Premium"] if c in data.columns]
-st.dataframe(data[smc_cols].tail(10).sort_index(ascending=False), use_container_width=True)
-
 st.subheader("Recent candles and indicators")
-show_cols = ["Open","High","Low","Close","Volume","RSI","MFI","ADX","EMA9","EMA21","EMA50","EMA200","BB_Lower","BB_Mid","BB_Upper","VWAP","ATR","RelVol","Support","Resistance","PowerLower","PowerMid","PowerUpper","PLUS_DI","MINUS_DI","BOS_Bull","BOS_Bear","CHOCH_Bull","CHOCH_Bear","SweepLow","SweepHigh","FVG_Bull","FVG_Bear","Discount","Premium"]
+show_cols = ["Open","High","Low","Close","Volume","RSI","MFI","ADX","EMA9","EMA21","EMA50","EMA200","BB_Lower","BB_Mid","BB_Upper","VWAP","ATR","RelVol","Support","Resistance","PowerLower","PowerMid","PowerUpper","PLUS_DI","MINUS_DI"]
 st.dataframe(data[show_cols].tail(25).sort_index(ascending=False), use_container_width=True)
 
 st.subheader("Paper trade log")
@@ -939,24 +837,6 @@ with st.expander("Backtest (historical, simplified)"):
             x6.metric("Average P&L / trade (price units)", f"{expectancy:.5f}")
             st.dataframe(bt.iloc[::-1], use_container_width=True)
             st.download_button("Download backtest CSV", bt.to_csv(index=False).encode("utf-8"), "backtest_results.csv", "text/csv")
-    if st.button("Compare original indicators vs SMC-enhanced strategy"):
-        baseline, base_final, base_err = run_backtest(raw, htf, signal_tf, htf_tf, score_threshold, risk_pct, rr2, STARTING_BALANCE, max_daily_loss, cost_bps, use_smc=False)
-        enhanced, smc_final, smc_err = run_backtest(raw, htf, signal_tf, htf_tf, score_threshold, risk_pct, rr2, STARTING_BALANCE, max_daily_loss, cost_bps, use_smc=True)
-        if base_err or smc_err:
-            st.error(base_err or smc_err)
-        else:
-            def summarize(label, trades, final):
-                if trades.empty:
-                    return {"Strategy": label, "Trades": 0, "Win rate %": np.nan, "Profit factor": np.nan, "Net P&L": final-STARTING_BALANCE, "Max drawdown %": np.nan}
-                pn = trades["PnL (price units)"]
-                gp = pn[pn > 0].sum(); gl = abs(pn[pn < 0].sum())
-                eq = trades["Balance"]; peak = eq.cummax()
-                dd = ((peak-eq)/peak.replace(0,np.nan)*100).max()
-                return {"Strategy": label, "Trades": len(trades), "Win rate %": round((pn>0).mean()*100,2), "Profit factor": round(gp/gl,2) if gl else np.inf, "Net P&L": round(final-STARTING_BALANCE,2), "Max drawdown %": round(float(dd),2) if pd.notna(dd) else 0.0}
-            comparison = pd.DataFrame([summarize("Original indicators (no SMC gate)", baseline, base_final), summarize("Indicators + SMC", enhanced, smc_final)])
-            st.dataframe(comparison, use_container_width=True)
-            st.download_button("Download strategy comparison CSV", comparison.to_csv(index=False).encode("utf-8"), "strategy_comparison.csv", "text/csv")
-            st.caption("Comparison is only as reliable as the loaded data and simplified backtester. Scores are normalized within each variant; results are not a guarantee of future performance.")
 
 st.divider()
 st.caption("Important: this version is paper-only. No broker API, exchange API, wallet, private key, or live trading is connected. Validate data quality and out-of-sample performance before considering any real-money use.")
