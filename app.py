@@ -181,59 +181,62 @@ def htf_bias(htf):
         return "Bearish", last
     return "Mixed", last
 
-def score_signal(last, bias, threshold=70):
-    """Trade Quality Score score using standard indicators and price-action filters; not a probability."""
-    def val(key, default=False):
-        v = last.get(key, default)
-        return bool(v) if pd.notna(v) else False
-    long_checks = {
-        "RSI oversold (<25)": last["RSI"] < 25,
-        "MFI oversold (<20)": pd.notna(last.get("MFI", np.nan)) and last["MFI"] < 20,
-        "Close below lower Bollinger Band": last["Close"] < last["BB_Lower"],
-        "Relative volume >= 1.5": pd.notna(last["RelVol"]) and last["RelVol"] >= 1.5,
-        "ADX range filter (<25)": pd.notna(last["ADX"]) and last["ADX"] < 25,
-        "HTF bullish": bias == "Bullish",
-        "EMA9 > EMA21": last["EMA9"] > last["EMA21"],
-        "+DI > -DI": pd.notna(last.get("PLUS_DI", np.nan)) and pd.notna(last.get("MINUS_DI", np.nan)) and last["PLUS_DI"] > last["MINUS_DI"],
-        "Below VWAP": last["Close"] < last["VWAP"],
-        "Near support": pd.notna(last.get("Support", np.nan)) and last["Close"] <= last["Support"] + 0.35 * last["ATR"],
-        "Bullish reversal candle": val("BullReversal"),
-    }
-    short_checks = {
-        "RSI overbought (>75)": last["RSI"] > 75,
-        "MFI overbought (>80)": pd.notna(last.get("MFI", np.nan)) and last["MFI"] > 80,
-        "Close above upper Bollinger Band": last["Close"] > last["BB_Upper"],
-        "Relative volume >= 1.5": pd.notna(last["RelVol"]) and last["RelVol"] >= 1.5,
-        "ADX range filter (<25)": pd.notna(last["ADX"]) and last["ADX"] < 25,
-        "HTF bearish": bias == "Bearish",
-        "EMA9 < EMA21": last["EMA9"] < last["EMA21"],
-        "-DI > +DI": pd.notna(last.get("PLUS_DI", np.nan)) and pd.notna(last.get("MINUS_DI", np.nan)) and last["MINUS_DI"] > last["PLUS_DI"],
-        "Above VWAP": last["Close"] > last["VWAP"],
-        "Near resistance": pd.notna(last.get("Resistance", np.nan)) and last["Close"] >= last["Resistance"] - 0.35 * last["ATR"],
-        "Bearish reversal candle": val("BearReversal"),
-    }
-    # Category-weighted score, capped at 100; normalize active categories for fair A/B comparison.
-    weights = {
-        "RSI oversold (<25)": 5, "MFI oversold (<20)": 5, "Close below lower Bollinger Band": 8,
-        "Relative volume >= 1.5": 5, "ADX range filter (<25)": 5, "HTF bullish": 10,
-        "EMA9 > EMA21": 5, "+DI > -DI": 5, "Below VWAP": 4, "Near support": 7,
-        "Bullish reversal candle": 5,
-        "RSI overbought (>75)": 5, "MFI overbought (>80)": 5, "Close above upper Bollinger Band": 8,
-        "HTF bearish": 10, "EMA9 < EMA21": 5, "-DI > +DI": 5, "Above VWAP": 4, "Near resistance": 7,
-        "Bearish reversal candle": 5,
-    }
-    active_long_max = sum(weights[k] for k in long_checks) or 1
-    active_short_max = sum(weights[k] for k in short_checks) or 1
-    long_score = min(100, round(100 * sum(weights[k] for k,v in long_checks.items() if v) / active_long_max))
-    short_score = min(100, round(100 * sum(weights[k] for k,v in short_checks.items() if v) / active_short_max))
-    long_hard = bias != "Bullish" or not (last["ADX"] < 25) or not (last["Close"] < last["BB_Lower"])
-    short_hard = bias != "Bearish" or not (last["ADX"] < 25) or not (last["Close"] > last["BB_Upper"])
-    if not long_hard and long_score >= threshold:
-        return "BUY", int(long_score), long_checks
-    if not short_hard and short_score >= threshold:
-        return "SELL", int(short_score), short_checks
-    return "WAIT", int(max(long_score, short_score)), long_checks if long_score >= short_score else short_checks
+def score_signal(last, bias, threshold=None):
+    """Brain-style directional decision from trend, momentum, DI, VWAP and volatility.
+    Returns an internal diagnostic strength for compatibility; it is not an entry threshold.
+    """
+    def ok(key):
+        value = last.get(key, np.nan)
+        return pd.notna(value) and bool(value)
 
+    close = last.get("Close", np.nan)
+    ema9, ema21 = last.get("EMA9", np.nan), last.get("EMA21", np.nan)
+    ema50, ema200 = last.get("EMA50", np.nan), last.get("EMA200", np.nan)
+    rsi, adx = last.get("RSI", np.nan), last.get("ADX", np.nan)
+    plus_di, minus_di = last.get("PLUS_DI", np.nan), last.get("MINUS_DI", np.nan)
+    vwap = last.get("VWAP", np.nan)
+    bb_mid = last.get("BB_Mid", np.nan)
+    mfi = last.get("MFI", np.nan)
+    relvol = last.get("RelVol", np.nan)
+
+    # Directional confirmation: no signal confirmation and no requirement to touch a Bollinger Band.
+    buy_checks = {
+        "HTF bullish": bias == "Bullish",
+        "EMA9 above EMA21": pd.notna(ema9) and pd.notna(ema21) and ema9 > ema21,
+        "Price above EMA50": pd.notna(ema50) and close > ema50,
+        "DI bullish": pd.notna(plus_di) and pd.notna(minus_di) and plus_di > minus_di,
+        "RSI supports upside": pd.notna(rsi) and 50 <= rsi <= 72,
+        "Price above VWAP": pd.notna(vwap) and close > vwap,
+        "Price above Bollinger midline": pd.notna(bb_mid) and close > bb_mid,
+        "ADX usable": pd.notna(adx) and adx >= 12,
+        "MFI not extremely weak": pd.isna(mfi) or mfi >= 35,
+        "Volume confirmation": pd.isna(relvol) or relvol >= 0.7,
+    }
+    sell_checks = {
+        "HTF bearish": bias == "Bearish",
+        "EMA9 below EMA21": pd.notna(ema9) and pd.notna(ema21) and ema9 < ema21,
+        "Price below EMA50": pd.notna(ema50) and close < ema50,
+        "DI bearish": pd.notna(plus_di) and pd.notna(minus_di) and minus_di > plus_di,
+        "RSI supports downside": pd.notna(rsi) and 28 <= rsi <= 50,
+        "Price below VWAP": pd.notna(vwap) and close < vwap,
+        "Price below Bollinger midline": pd.notna(bb_mid) and close < bb_mid,
+        "ADX usable": pd.notna(adx) and adx >= 12,
+        "MFI not extremely strong": pd.isna(mfi) or mfi <= 65,
+        "Volume confirmation": pd.isna(relvol) or relvol >= 0.7,
+    }
+    buy_count = sum(bool(v) for v in buy_checks.values())
+    sell_count = sum(bool(v) for v in sell_checks.values())
+    buy_strength = round(100 * buy_count / len(buy_checks))
+    sell_strength = round(100 * sell_count / len(sell_checks))
+
+    # Require a clear majority of aligned signals, with trend + DI + HTF mandatory.
+    buy_mandatory = buy_checks["HTF bullish"] and buy_checks["EMA9 above EMA21"] and buy_checks["DI bullish"]
+    sell_mandatory = sell_checks["HTF bearish"] and sell_checks["EMA9 below EMA21"] and sell_checks["DI bearish"]
+    if buy_mandatory and buy_count >= 6:
+        return "BUY", int(buy_strength), buy_checks
+    if sell_mandatory and sell_count >= 6:
+        return "SELL", int(sell_strength), sell_checks
+    return "WAIT", int(max(buy_strength, sell_strength)), buy_checks if buy_strength >= sell_strength else sell_checks
 
 
 @st.cache_data(ttl=55, show_spinner=False)
@@ -251,7 +254,7 @@ def scan_all_market_signals():
                 rows.append({
                     "Market": name, "Symbol": config["symbol"], "TF": tf,
                     "Last close": None, "HTF bias": "Unknown",
-                    "Signal": "DATA UNAVAILABLE", "Trade Quality Score": None,
+                    "Signal": "DATA UNAVAILABLE", "Signal strength (diagnostic)": None,
                     "RSI": None, "ADX": None, "Data status": "Insufficient candles or provider returned no data"
                 })
                 continue
@@ -259,13 +262,13 @@ def scan_all_market_signals():
             htf_processed = add_adaptive_levels(add_indicators(htf_market), config["htf"]) if not htf_market.empty else htf_market
             bias_value, _ = htf_bias(htf_processed) if not htf_processed.empty else ("Unknown", None)
             last_row = market_data.iloc[-1]
-            best_side, best_score, _ = score_signal(last_row, bias_value, threshold=st.session_state.get("settings_score_threshold_applied", 70))
+            best_side, best_score, _ = score_signal(last_row, bias_value, threshold=None)
             signal_value = best_side if best_side in ("BUY", "SELL") else "WAIT"
             rows.append({
                 "Market": name, "Symbol": config["symbol"], "TF": tf,
                 "Last close": round(float(last_row["Close"]), 5),
                 "HTF bias": bias_value, "Signal": signal_value,
-                "Trade Quality Score": int(best_score),
+                "Signal strength (diagnostic)": int(best_score),
                 "RSI": round(float(last_row["RSI"]), 1) if pd.notna(last_row["RSI"]) else None,
                 "ADX": round(float(last_row["ADX"]), 1) if pd.notna(last_row["ADX"]) else None,
                 "Data status": "OK"
@@ -274,7 +277,7 @@ def scan_all_market_signals():
             rows.append({
                 "Market": name, "Symbol": config["symbol"], "TF": tf,
                 "Last close": None, "HTF bias": "Unknown",
-                "Signal": "DATA ERROR", "Trade Quality Score": None,
+                "Signal": "DATA ERROR", "Signal strength (diagnostic)": None,
                 "RSI": None, "ADX": None, "Data status": str(exc)[:120]
             })
     return pd.DataFrame(rows)
@@ -459,11 +462,11 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
                 }
                 open_positions.append(pos)
                 trades_today += 1
-                events.append(f"Automatically opened paper {side} on {market_name} at {entry:.5f} (score {score}/100).")
+                events.append(f"Automatically opened paper {side} on {market_name} at {entry:.5f} (directional signal).")
             else:
                 events.append("Signal rejected: stop distance was zero.")
     else:
-        events.append(f"No entry: setup did not pass the hard filters (Trade Quality Score {score}/100).")
+        events.append(f"No entry: setup did not pass the hard filters (Signal strength {score}/100).")
 
     processed[market_key] = bar_time
     st.session_state.auto_last_processed = processed
@@ -483,7 +486,7 @@ def diagnose_backtest_filters(df, htf, timeframe, htf_timeframe, threshold, max_
         "Rejected: HTF bias not aligned": 0,
         "Rejected: ADX hard filter (must be <25)": 0,
         "Rejected: Bollinger close hard filter": 0,
-        "Rejected: Trade Quality Score below threshold": 0,
+        "Rejected: Signal confirmation not met": 0,
         "Signals passing all filters": 0,
     }
     if len(df) < 250:
@@ -541,7 +544,7 @@ def diagnose_backtest_filters(df, htf, timeframe, htf_timeframe, threshold, max_
             counts["Signals passing all filters"] += 1
             cooldown_until = i + 97
         elif score < threshold:
-            counts["Rejected: Trade Quality Score below threshold"] += 1
+            counts["Rejected: Signal confirmation not met"] += 1
     return pd.DataFrame([{"Diagnostic": k, "Count": v} for k, v in counts.items()])
 
 
@@ -654,7 +657,7 @@ with st.sidebar:
         tf_index = allowed_tfs.index(current_tf) if current_tf in allowed_tfs else allowed_tfs.index(default_tf)
         signal_tf = st.selectbox("Signal timeframe", allowed_tfs, index=tf_index, key="settings_signal_tf_widget")
         htf_tf = st.selectbox("Higher-timeframe filter", ["5m", "15m", "30m"], index=1, key="settings_htf_tf")
-        score_threshold = st.slider("Minimum Trade Quality Score", 50, 95, 70, 1, key="settings_score_threshold")
+        score_threshold = st.slider("Minimum Signal strength", 50, 95, 70, 1, key="settings_score_threshold")
         risk_pct = st.slider("Risk per trade (%)", 0.25, 1.0, 0.5, 0.25, key="settings_risk_pct")
         max_daily_loss = st.slider("Daily loss stop (%)", 1.0, 3.0, 2.0, 0.5, key="settings_max_daily_loss")
         max_trades_per_day = st.slider("Maximum paper trades per day", 1, 30, 20, 1, key="settings_max_trades_per_day")
@@ -664,13 +667,13 @@ with st.sidebar:
         st.session_state.settings_market_applied = market_name
         st.session_state.settings_signal_tf = signal_tf
         st.session_state.settings_htf_tf_applied = htf_tf
-        st.session_state.settings_score_threshold_applied = score_threshold
+        st.session_state.settings_score_threshold_applied = None
         st.session_state.settings_risk_pct_applied = risk_pct
         st.session_state.settings_max_daily_loss_applied = max_daily_loss
         st.session_state.settings_max_trades_per_day_applied = max_trades_per_day
         st.session_state.settings_rr2_applied = rr2
         st.success("Settings confirmed for this session.")
-    st.caption("Changes apply when you tap Confirm settings. Trade Quality Score is a rule-fit score out of 100, not a win-rate percentage or guaranteed probability.")
+    st.caption("The Brain logic evaluates trend, momentum, DI, VWAP, volatility and higher-timeframe alignment. Entries are simulated paper trades only.")
 
 if "balance" not in st.session_state:
     st.session_state.balance = STARTING_BALANCE
@@ -756,7 +759,7 @@ st.subheader(f"{market_name} — {signal_tf} signal")
 m1,m2,m3,m4,m5 = st.columns(5)
 m1.metric("Last candle close", f"{float(last['Close']):,.5f}")
 m2.metric("HTF bias", bias)
-m3.metric("AI Trade Quality Score", f"{score}/100")
+m3.metric("AI Signal strength", f"{score}/100")
 m4.metric("RSI / MFI", f"{last['RSI']:.1f} / {last['MFI']:.1f}" if pd.notna(last["MFI"]) else f"{last['RSI']:.1f} / n/a")
 m5.metric("ADX / Rel. volume", f"{last['ADX']:.1f} / {last['RelVol']:.2f}x" if pd.notna(last["RelVol"]) else f"{last['ADX']:.1f} / n/a")
 
@@ -765,9 +768,9 @@ if st.session_state.halted:
 elif st.session_state.trades_today >= max_trades_per_day:
     st.error(f"Daily trade limit reached ({max_trades_per_day}). No more paper trades will be allowed today.")
 elif side in ("BUY","SELL"):
-    st.success(f"Potential {side} setup — score {score}/100. This is a paper signal, not a guaranteed trade.")
+    st.success(f"Potential {side} setup — directional signal. This is a paper signal, not a guaranteed trade.")
 else:
-    st.warning(f"WAIT — no setup passed all hard filters. Best-side Trade Quality Score: {score}/100.")
+    st.warning(f"WAIT — no setup passed all hard filters. Best-side Signal strength: {score}/100.")
 
 st.subheader("Automatic paper trading")
 st.caption("Paper trading only. Automatic scanning is enabled by default and checks the selected market about every 60 seconds while this page stays open and connected. Cloud sleep, browser disconnection, or provider delays can interrupt scans.")
@@ -838,7 +841,7 @@ else:
     levels = None
 
 with st.expander("AI Brain — condition-by-condition explanation", expanded=True):
-    st.write("The score is a weighted Trade Quality Score, not a calibrated probability of winning. Hard filters reject a setup if the HTF bias disagrees, ADX is not ranging, or price has not closed outside the relevant Bollinger Band.")
+    st.write("The score is a weighted Signal strength, not a calibrated probability of winning. Hard filters reject a setup if the HTF bias disagrees, ADX is not ranging, or price has not closed outside the relevant Bollinger Band.")
     for name, passed in checks.items():
         st.write(("✅ " if passed else "⬜ ") + name)
 
