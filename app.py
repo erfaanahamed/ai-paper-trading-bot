@@ -265,8 +265,8 @@ def scan_all_market_signals():
             htf_processed = add_adaptive_levels(add_indicators(htf_market), config["htf"]) if not htf_market.empty else htf_market
             bias_value, _ = htf_bias(htf_processed) if not htf_processed.empty else ("Unknown", None)
             last_row = market_data.iloc[-1]
-            best_side, best_score, _, hard_pass = score_signal(last_row, bias_value, threshold=78)
-            signal_value = best_side if best_side in ("BUY", "SELL") and hard_pass else "WAIT"
+            best_side, best_score, _ = score_signal(last_row, bias_value, threshold=78)
+            signal_value = best_side if best_side in ("BUY", "SELL") else "WAIT"
             rows.append({
                 "Market": name, "Symbol": config["symbol"], "TF": tf,
                 "Last close": round(float(last_row["Close"]), 5),
@@ -474,6 +474,82 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
     processed[market_key] = bar_time
     st.session_state.auto_last_processed = processed
     return balance, trades_today, daily_start_balance, open_positions, events, "Scan complete."
+
+def diagnose_backtest_filters(df, htf, timeframe, htf_timeframe, threshold, max_daily_loss_pct):
+    """Count why historical bars did not produce entries; does not change strategy rules."""
+    counts = {
+        "Bars in loaded data": int(len(df)),
+        "Bars evaluated for signals": 0,
+        "Skipped: need at least 250 candles": 0,
+        "Skipped: higher-timeframe data unavailable": 0,
+        "Skipped: not enough higher-timeframe history": 0,
+        "Skipped: daily loss limit reached": 0,
+        "Skipped: cooldown after prior trade": 0,
+        "Skipped: indicators not ready": 0,
+        "Rejected: HTF bias not aligned": 0,
+        "Rejected: ADX hard filter (must be <25)": 0,
+        "Rejected: Bollinger close hard filter": 0,
+        "Rejected: rule-fit score below threshold": 0,
+        "Signals passing all filters": 0,
+    }
+    if len(df) < 250:
+        counts["Skipped: need at least 250 candles"] = 1
+        return pd.DataFrame([{"Diagnostic": k, "Count": v} for k, v in counts.items()])
+    if htf is None or htf.empty:
+        counts["Skipped: higher-timeframe data unavailable"] = 1
+        return pd.DataFrame([{"Diagnostic": k, "Count": v} for k, v in counts.items()])
+    d = add_adaptive_levels(add_indicators(df), timeframe)
+    ht = add_adaptive_levels(add_indicators(htf), htf_timeframe)
+    balance_proxy = float(STARTING_BALANCE)
+    day_start_proxy = balance_proxy
+    current_day = None
+    cooldown_until = -1
+    # Use same signal eligibility window as the simplified backtest. Since this is a diagnostic
+    # pass, trade P&L is not recomputed; cooldown is approximated using accepted signal bars.
+    for i in range(220, len(d)-1):
+        row = d.iloc[i]
+        ts = d.index[i]
+        day = pd.Timestamp(ts).date()
+        if current_day != day:
+            current_day, day_start_proxy = day, balance_proxy
+        if (day_start_proxy - balance_proxy) / max(day_start_proxy, 1) >= max_daily_loss_pct/100:
+            counts["Skipped: daily loss limit reached"] += 1
+            continue
+        if i < cooldown_until:
+            counts["Skipped: cooldown after prior trade"] += 1
+            continue
+        hslice = ht.loc[ht.index <= ts]
+        if len(hslice) < 205:
+            counts["Skipped: not enough higher-timeframe history"] += 1
+            continue
+        bias, _ = htf_bias(hslice.tail(500))
+        required = ["ATR", "BB_Mid", "BB_Lower", "BB_Upper", "ADX", "RSI", "MFI"]
+        if not all(pd.notna(row.get(k, np.nan)) for k in required):
+            counts["Skipped: indicators not ready"] += 1
+            continue
+        counts["Bars evaluated for signals"] += 1
+        long_hard_ok = (bias == "Bullish" and pd.notna(row["ADX"]) and row["ADX"] < 25 and row["Close"] < row["BB_Lower"])
+        short_hard_ok = (bias == "Bearish" and pd.notna(row["ADX"]) and row["ADX"] < 25 and row["Close"] > row["BB_Upper"])
+        if bias not in ("Bullish", "Bearish"):
+            counts["Rejected: HTF bias not aligned"] += 1
+        elif bias == "Bullish" and not long_hard_ok:
+            if not (pd.notna(row["ADX"]) and row["ADX"] < 25):
+                counts["Rejected: ADX hard filter (must be <25)"] += 1
+            if not (row["Close"] < row["BB_Lower"]):
+                counts["Rejected: Bollinger close hard filter"] += 1
+        elif bias == "Bearish" and not short_hard_ok:
+            if not (pd.notna(row["ADX"]) and row["ADX"] < 25):
+                counts["Rejected: ADX hard filter (must be <25)"] += 1
+            if not (row["Close"] > row["BB_Upper"]):
+                counts["Rejected: Bollinger close hard filter"] += 1
+        side, score, _ = score_signal(row, bias, threshold)
+        if side in ("BUY", "SELL"):
+            counts["Signals passing all filters"] += 1
+            cooldown_until = i + 97
+        elif score < threshold:
+            counts["Rejected: rule-fit score below threshold"] += 1
+    return pd.DataFrame([{"Diagnostic": k, "Count": v} for k, v in counts.items()])
+
 
 def run_backtest(df, htf, timeframe, htf_timeframe, threshold, risk_pct, rr2, starting_balance, max_daily_loss_pct, cost_bps=2.0):
     # Simple candle-close signal backtest; next-bar open entry avoids same-close lookahead.
@@ -828,10 +904,14 @@ with st.expander("Backtest (historical, simplified)"):
     cost_bps = st.slider("Estimated round-trip costs (basis points of price × units)", 0.0, 20.0, 2.0, 0.5)
     if st.button("Run backtest"):
         bt, final_balance, err = run_backtest(raw, htf, signal_tf, htf_tf, score_threshold, risk_pct, rr2, STARTING_BALANCE, max_daily_loss, cost_bps)
+        diagnostics = diagnose_backtest_filters(raw, htf, signal_tf, htf_tf, score_threshold, max_daily_loss)
+        st.subheader("Backtest diagnostics")
+        st.caption("Counts explain why bars were skipped or rejected. They are diagnostic counts, not independent trades, and do not change the strategy rules.")
+        st.dataframe(diagnostics, hide_index=True, use_container_width=True)
         if err:
             st.error(err)
         elif bt.empty:
-            st.warning("No trades passed the filters in the loaded history.")
+            st.warning("No trades passed the filters in the loaded history. Use the diagnostics above to identify the main blocker.")
         else:
             wins = (bt["PnL (price units)"] > 0).sum()
             win_rate = 100*wins/len(bt)
