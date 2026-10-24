@@ -9,6 +9,17 @@ from streamlit_autorefresh import st_autorefresh
 import json
 from pathlib import Path
 
+# Optional ML dependencies: the rule-based bot still runs if scikit-learn is unavailable.
+try:
+    from sklearn.impute import SimpleImputer
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.model_selection import TimeSeriesSplit, cross_val_score
+    SKLEARN_AVAILABLE = True
+except Exception:
+    SKLEARN_AVAILABLE = False
+
 st.set_page_config(page_title="AI Paper Trading Brain", page_icon="🧠", layout="wide")
 
 # -----------------------------
@@ -181,7 +192,128 @@ def htf_bias(htf):
         return "Bearish", last
     return "Mixed", last
 
-def score_signal(last, bias, threshold=None):
+# -----------------------------
+# Learning engine (trade-outcome adaptation + ML)
+# -----------------------------
+ML_FEATURES = [
+    "ML_RSI", "ML_ADX", "ML_DI_Gap", "ML_EMA_Gap_Pct",
+    "ML_ATR_Pct", "ML_VWAP_Gap_Pct", "ML_RelVol", "ML_MFI",
+    "ML_Score", "ML_HTF_Bull", "ML_HTF_Bear", "ML_IsBuy",
+]
+MIN_ML_TRADES = 30
+LEARNING_MODEL_VERSION = "logistic-v1"
+
+
+def extract_ml_features(last, bias, score, side):
+    """Create stable numeric features from the signal candle; no future data is used."""
+    close = float(last.get("Close", np.nan))
+    safe_close = max(abs(close), 1e-9) if np.isfinite(close) else np.nan
+    def num(key, default=np.nan):
+        value = last.get(key, default)
+        try:
+            value = float(value)
+            return value if np.isfinite(value) else default
+        except Exception:
+            return default
+    ema9, ema21 = num("EMA9"), num("EMA21")
+    atr = num("ATR")
+    vwap = num("VWAP")
+    plus_di, minus_di = num("PLUS_DI"), num("MINUS_DI")
+    return {
+        "ML_RSI": num("RSI"), "ML_ADX": num("ADX"),
+        "ML_DI_Gap": plus_di - minus_di if np.isfinite(plus_di) and np.isfinite(minus_di) else np.nan,
+        "ML_EMA_Gap_Pct": (ema9 - ema21) / safe_close * 100 if np.isfinite(ema9) and np.isfinite(ema21) else np.nan,
+        "ML_ATR_Pct": atr / safe_close * 100 if np.isfinite(atr) and np.isfinite(safe_close) else np.nan,
+        "ML_VWAP_Gap_Pct": (close - vwap) / safe_close * 100 if np.isfinite(close) and np.isfinite(vwap) and np.isfinite(safe_close) else np.nan,
+        "ML_RelVol": num("RelVol"), "ML_MFI": num("MFI"),
+        "ML_Score": float(score), "ML_HTF_Bull": int(bias == "Bullish"),
+        "ML_HTF_Bear": int(bias == "Bearish"), "ML_IsBuy": int(side == "BUY"),
+    }
+
+
+def _closed_learning_rows(trades):
+    """Only use completed records with recorded entry features and a numeric realized P&L."""
+    if not trades:
+        return pd.DataFrame()
+    frame = pd.DataFrame(trades)
+    if not all(c in frame.columns for c in ML_FEATURES):
+        return pd.DataFrame()
+    pnl_col = next((c for c in ["PnL (estimated price-units)", "PnL (price units)"] if c in frame.columns), None)
+    if not pnl_col:
+        return pd.DataFrame()
+    frame["_pnl"] = pd.to_numeric(frame[pnl_col], errors="coerce")
+    frame = frame[frame[ML_FEATURES].notna().any(axis=1) & frame["_pnl"].notna()].copy()
+    if frame.empty:
+        return frame
+    # Do not train on trades still open; only rows with a close/exit outcome qualify.
+    if "Status" in frame.columns:
+        frame = frame[frame["Status"].astype(str).str.contains("CLOSED", case=False, na=False)]
+    if "Exit reason" in frame.columns:
+        frame = frame[frame["Exit reason"].notna()]
+    frame["_label"] = (frame["_pnl"] > 0).astype(int)
+    return frame
+
+
+def learning_profile(trades):
+    """Return conservative learned confirmation setting and an optional trained ML model."""
+    rows = _closed_learning_rows(trades)
+    profile = {"closed_samples": int(len(rows)), "recent_win_rate": None,
+               "min_confirmations": 6, "model": None, "model_ready": False,
+               "model_note": "Collecting completed paper trades with entry features."}
+    if len(rows):
+        recent = rows.tail(20)
+        win_rate = float(recent["_label"].mean())
+        profile["recent_win_rate"] = win_rate
+        # A small, bounded adjustment: tighten after poor recent results; relax only slightly after good results.
+        if len(recent) >= 10 and win_rate < 0.40:
+            profile["min_confirmations"] = 7
+        elif len(recent) >= 10 and win_rate > 0.65:
+            profile["min_confirmations"] = 5
+    if not SKLEARN_AVAILABLE:
+        profile["model_note"] = "scikit-learn is not installed; adaptive rule analysis is active, ML is disabled."
+        return profile
+    if len(rows) < MIN_ML_TRADES or rows["_label"].nunique() < 2 or rows["_label"].value_counts().min() < 8:
+        profile["model_note"] = f"ML needs at least {MIN_ML_TRADES} completed feature-rich trades and at least 8 wins and 8 losses."
+        return profile
+    try:
+        x = rows[ML_FEATURES].apply(pd.to_numeric, errors="coerce")
+        y = rows["_label"].astype(int)
+        model = Pipeline([
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scale", StandardScaler()),
+            ("classifier", LogisticRegression(max_iter=1000, class_weight="balanced", random_state=42)),
+        ])
+        model.fit(x, y)
+        profile["model"] = model
+        profile["model_ready"] = True
+        profile["model_note"] = f"ML model trained on {len(rows)} completed trades ({int(y.sum())} wins, {int((1-y).sum())} losses)."
+    except Exception as exc:
+        profile["model_note"] = f"ML training unavailable: {str(exc)[:100]}"
+    return profile
+
+
+def apply_learning_gate(side, last, bias, score, profile):
+    """Filter a rule signal only after enough labeled trades exist; otherwise preserve baseline rules."""
+    if side not in ("BUY", "SELL") or not profile.get("model_ready"):
+        return side, None, "ML not applied; using rule-based signal." if side in ("BUY", "SELL") else "No rule-based signal."
+    try:
+        features = extract_ml_features(last, bias, score, side)
+        x = pd.DataFrame([{k: features.get(k, np.nan) for k in ML_FEATURES}], columns=ML_FEATURES)
+        win_probability = float(profile["model"].predict_proba(x)[0][1])
+        recent_wr = profile.get("recent_win_rate")
+        cutoff = 0.55
+        if recent_wr is not None and recent_wr < 0.40:
+            cutoff = 0.62
+        elif recent_wr is not None and recent_wr > 0.65:
+            cutoff = 0.52
+        if win_probability < cutoff:
+            return "WAIT", win_probability, f"ML filter blocked setup ({win_probability:.0%} estimated win probability; required {cutoff:.0%})."
+        return side, win_probability, f"ML filter passed ({win_probability:.0%} estimated win probability; threshold {cutoff:.0%})."
+    except Exception as exc:
+        return side, None, f"ML filter error; baseline signal retained ({str(exc)[:80]})."
+
+
+def score_signal(last, bias, threshold=None, min_confirmations=6):
     """Brain-style directional decision from trend, momentum, DI, VWAP and volatility.
     Returns an internal diagnostic strength for compatibility; it is not an entry threshold.
     """
@@ -232,9 +364,9 @@ def score_signal(last, bias, threshold=None):
     # Require a clear majority of aligned signals, with trend + DI + HTF mandatory.
     buy_mandatory = buy_checks["HTF bullish"] and buy_checks["EMA9 above EMA21"] and buy_checks["DI bullish"]
     sell_mandatory = sell_checks["HTF bearish"] and sell_checks["EMA9 below EMA21"] and sell_checks["DI bearish"]
-    if buy_mandatory and buy_count >= 6:
+    if buy_mandatory and buy_count >= int(min_confirmations):
         return "BUY", int(buy_strength), buy_checks
-    if sell_mandatory and sell_count >= 6:
+    if sell_mandatory and sell_count >= int(min_confirmations):
         return "SELL", int(sell_strength), sell_checks
     return "WAIT", int(max(buy_strength, sell_strength)), buy_checks if buy_strength >= sell_strength else sell_checks
 
@@ -245,6 +377,7 @@ def scan_all_market_signals():
     This reports signals only; it does not open paper positions for every market.
     """
     rows = []
+    profile = learning_profile(st.session_state.get("trades", load_trade_log())) if "trades" in st.session_state else learning_profile(load_trade_log())
     for name, config in MARKETS.items():
         tf = config["signal_tf"]
         try:
@@ -262,13 +395,15 @@ def scan_all_market_signals():
             htf_processed = add_adaptive_levels(add_indicators(htf_market), config["htf"]) if not htf_market.empty else htf_market
             bias_value, _ = htf_bias(htf_processed) if not htf_processed.empty else ("Unknown", None)
             last_row = market_data.iloc[-1]
-            best_side, best_score, _ = score_signal(last_row, bias_value, threshold=None)
+            best_side, best_score, _ = score_signal(last_row, bias_value, threshold=None, min_confirmations=profile["min_confirmations"])
+            best_side, ml_prob, ml_note = apply_learning_gate(best_side, last_row, bias_value, best_score, profile)
             signal_value = best_side if best_side in ("BUY", "SELL") else "WAIT"
             rows.append({
                 "Market": name, "Symbol": config["symbol"], "TF": tf,
                 "Last close": round(float(last_row["Close"]), 5),
-                "HTF bias": bias_value, "Signal": signal_value,
+                "HTF bias": bias_value, "Signal": (best_side if best_side in ("BUY", "SELL") else "WAIT"),
                 "Signal strength (diagnostic)": int(best_score),
+                "ML win probability": round(ml_prob * 100, 1) if ml_prob is not None else None,
                 "RSI": round(float(last_row["RSI"]), 1) if pd.notna(last_row["RSI"]) else None,
                 "ADX": round(float(last_row["ADX"]), 1) if pd.notna(last_row["ADX"]) else None,
                 "Data status": "OK"
@@ -385,7 +520,8 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
                 "Side": side, "Score": pos.get("Score"), "Entry": pos.get("Entry"),
                 "Stop": pos.get("InitialStop", pos.get("Stop")), "TP1": pos.get("TP1"), "TP2": pos.get("TP2"),
                 "Exit": closed_at, "Exit reason": "SL / break-even stop", "Qty": qty,
-                "PnL (estimated price-units)": pnl, "Status": "CLOSED"
+                "PnL (estimated price-units)": pnl, "Status": "CLOSED",
+                **{k: pos.get(k, np.nan) for k in ML_FEATURES}
             })
             events.append(f"Closed {side} {market_name} at stop-loss; estimated paper P&L {pnl:.2f} price-units.")
             continue
@@ -410,7 +546,8 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
                 "Side": side, "Score": pos.get("Score"), "Entry": pos.get("Entry"),
                 "Stop": pos.get("InitialStop", pos.get("Stop")), "TP1": pos.get("TP1"), "TP2": pos.get("TP2"),
                 "Exit": float(pos["TP2"]), "Exit reason": "TP2", "Qty": qty,
-                "PnL (estimated price-units)": pnl, "Status": "CLOSED"
+                "PnL (estimated price-units)": pnl, "Status": "CLOSED",
+                **{k: pos.get(k, np.nan) for k in ML_FEATURES}
             })
             events.append(f"TP2 hit on {market_name}; position closed, estimated paper P&L {pnl:.2f} price-units.")
             continue
@@ -455,8 +592,12 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
         st.session_state.auto_last_processed = processed
         return balance, trades_today, daily_start_balance, open_positions, events, "Position already open for this market."
 
-    side, score, checks = score_signal(last, bias, threshold)
+    current_trades = st.session_state.get("trades", load_trade_log())
+    profile = learning_profile(current_trades)
+    side, score, checks = score_signal(last, bias, threshold, profile["min_confirmations"])
+    side, ml_probability, ml_note = apply_learning_gate(side, last, bias, score, profile)
     if side in ("BUY", "SELL"):
+        events.append(ml_note)
         levels = make_trade_levels(last, side, risk_pct, rr2)
         if levels:
             entry = float(levels["entry"])
@@ -484,7 +625,7 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
                     "Symbol": symbol, "Timeframe": timeframe, "Side": side, "Score": score,
                     "Entry": entry, "Stop": stop, "TP1": tp1, "TP2": tp2,
                     "Qty": qty, "RiskBudget": risk_cash, "TP1_Hit": False, "RealizedPnL": 0.0,
-                    "Status": "OPEN"
+                    **extract_ml_features(last, bias, score, side), "Status": "OPEN"
                 }
                 open_positions.append(pos)
                 trades_today += 1
@@ -492,7 +633,7 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
             else:
                 events.append("Signal rejected: stop distance was zero.")
     else:
-        events.append(f"No entry: setup did not pass the hard filters (Signal strength {score}/100).")
+        events.append(f"No entry: setup did not pass the filters (Signal strength {score}/100). {ml_note}")
 
     processed[market_key] = bar_time
     st.session_state.auto_last_processed = processed
@@ -776,7 +917,9 @@ if data.empty or len(data) < 60:
     st.stop()
 
 last = data.iloc[-1]
-side, score, checks = score_signal(last, bias, score_threshold)
+learning = learning_profile(st.session_state.trades)
+side, score, checks = score_signal(last, bias, score_threshold, learning["min_confirmations"])
+side, ml_probability, ml_note = apply_learning_gate(side, last, bias, score, learning)
 daily_loss_reached = ((st.session_state.daily_start - st.session_state.balance) / max(st.session_state.daily_start, 1) * 100) >= max_daily_loss
 if st.session_state.trades_today >= max_trades_per_day:
     side = "WAIT"
@@ -793,14 +936,25 @@ m3.metric("AI Signal strength", f"{score}/100")
 m4.metric("RSI / MFI", f"{last['RSI']:.1f} / {last['MFI']:.1f}" if pd.notna(last["MFI"]) else f"{last['RSI']:.1f} / n/a")
 m5.metric("ADX / Rel. volume", f"{last['ADX']:.1f} / {last['RelVol']:.2f}x" if pd.notna(last["RelVol"]) else f"{last['ADX']:.1f} / n/a")
 
+with st.expander("🧠 Self-learning engine — trade outcomes + machine learning", expanded=True):
+    l1, l2, l3 = st.columns(3)
+    l1.metric("Completed learning trades", learning["closed_samples"])
+    l2.metric("Recent win rate", f"{learning['recent_win_rate']:.1%}" if learning["recent_win_rate"] is not None else "Not enough data")
+    l3.metric("ML model", "TRAINED" if learning["model_ready"] else "COLLECTING DATA")
+    st.write(learning["model_note"])
+    st.write(f"Adaptive rule confirmations: {learning['min_confirmations']} of 10 checks.")
+    if ml_probability is not None:
+        st.write(f"Current setup estimated win probability: {ml_probability:.1%}.")
+    st.caption("The model learns only from completed paper trades that contain entry features. Before enough examples exist, the bot transparently falls back to rule-based signals. Probabilities are estimates, not guarantees.")
+
 if st.session_state.halted:
     st.error("Paper bot is halted by the daily loss control. It will reset on the next calendar day.")
 elif st.session_state.trades_today >= max_trades_per_day:
     st.error(f"Daily trade limit reached ({max_trades_per_day}). No more paper trades will be allowed today.")
 elif side in ("BUY","SELL"):
-    st.success(f"Potential {side} setup — directional signal. This is a paper signal, not a guaranteed trade.")
+    st.success(f"Potential {side} setup — paper signal. {ml_note} This is not a guaranteed trade.")
 else:
-    st.warning(f"WAIT — no setup passed all hard filters. Best-side Signal strength: {score}/100.")
+    st.warning(f"WAIT — no setup passed all filters. Best-side Signal strength: {score}/100. {ml_note}")
 
 st.subheader("Automatic paper trading")
 st.caption("Paper trading only. Automatic scanning checks all configured markets about every 60 seconds while this page stays open and connected. Cloud sleep, browser disconnection, or provider delays can interrupt scans.")
