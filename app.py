@@ -39,6 +39,58 @@ MARKETS = {
 }
 INTERVAL_MAP = {"5m": ("5m", "5d"), "15m": ("15m", "60d"), "30m": ("30m", "60d")}
 
+# -----------------------------
+# Market session intelligence (Yahoo Finance schedule estimates + MT5-ready)
+# -----------------------------
+from zoneinfo import ZoneInfo
+
+def market_session_status(market_name, config, now_utc=None):
+    """Estimate session state from public market conventions.
+    Yahoo Finance does not expose broker tradability; MT5 can later override this
+    with broker-specific symbol sessions when an MT5 connector is configured.
+    """
+    now_utc = now_utc or datetime.now(timezone.utc)
+    kind = config.get("kind", "")
+    if kind == "crypto":
+        return {"Session status": "OPEN", "Session detail": "24/7 market (provider data still checked)", "Session source": "Schedule estimate"}
+    if kind == "forex":
+        now_ny = now_utc.astimezone(ZoneInfo("America/New_York"))
+        wd = now_ny.weekday()  # Monday=0, Sunday=6
+        t = now_ny.time()
+        open_now = not (wd == 5 or (wd == 6 and t < datetime.strptime("17:00", "%H:%M").time())
+                        or (wd == 4 and t >= datetime.strptime("17:00", "%H:%M").time()))
+        detail = "Approx. Sun 17:00–Fri 17:00 New York time"
+        return {"Session status": "OPEN" if open_now else "CLOSED", "Session detail": detail, "Session source": "Schedule estimate"}
+    if kind in ("gold", "oil"):
+        now_ct = now_utc.astimezone(ZoneInfo("America/Chicago"))
+        wd, t = now_ct.weekday(), now_ct.time()
+        t1600 = datetime.strptime("16:00", "%H:%M").time()
+        t1700 = datetime.strptime("17:00", "%H:%M").time()
+        closed_weekend = wd == 5 or (wd == 6 and t < t1700) or (wd == 4 and t >= t1600)
+        daily_break = t >= t1600 and t < t1700
+        open_now = not closed_weekend and not daily_break
+        detail = "Approx. Sun–Fri, 17:00–16:00 Chicago time; daily break 16:00–17:00"
+        return {"Session status": "OPEN" if open_now else "CLOSED", "Session detail": detail, "Session source": "Futures schedule estimate"}
+    return {"Session status": "UNKNOWN", "Session detail": "No configured schedule", "Session source": "Unknown"}
+
+def candle_freshness_status(df, timeframe, now_utc=None):
+    """Reject entries on old candles; tolerate some provider lag."""
+    if df is None or df.empty:
+        return False, "No candles"
+    now_utc = now_utc or datetime.now(timezone.utc)
+    try:
+        last_ts = pd.Timestamp(df.index[-1])
+        if last_ts.tzinfo is None:
+            last_ts = last_ts.tz_localize("UTC")
+        last_ts = last_ts.tz_convert("UTC")
+        mins = int(timeframe.replace("m", ""))
+        age_min = max(0.0, (now_utc - last_ts.to_pydatetime()).total_seconds() / 60.0)
+        # Candles are timestamped at their start; allow two bars plus 10 minutes.
+        limit = max(20, mins * 2 + 10)
+        return age_min <= limit, f"Latest candle age {age_min:.0f} min (limit {limit} min)"
+    except Exception:
+        return False, "Unable to verify candle timestamp"
+
 
 TRADE_LOG_PATH = Path("paper_trade_history.csv")
 def persist_trade_log(trades):
@@ -380,6 +432,7 @@ def scan_all_market_signals():
     profile = learning_profile(st.session_state.get("trades", load_trade_log())) if "trades" in st.session_state else learning_profile(load_trade_log())
     for name, config in MARKETS.items():
         tf = config["signal_tf"]
+        session = market_session_status(name, config)
         try:
             raw_market = download_data(config["symbol"], tf)
             htf_market = download_data(config["symbol"], config["htf"])
@@ -388,15 +441,21 @@ def scan_all_market_signals():
                     "Market": name, "Symbol": config["symbol"], "TF": tf,
                     "Last close": None, "HTF bias": "Unknown",
                     "Signal": "DATA UNAVAILABLE", "Signal strength (diagnostic)": None,
-                    "RSI": None, "ADX": None, "Data status": "Insufficient candles or provider returned no data"
+                    "RSI": None, "ADX": None, "Data status": "Insufficient candles or provider returned no data",
+                    **session
                 })
                 continue
             market_data = add_adaptive_levels(add_indicators(raw_market), tf)
             htf_processed = add_adaptive_levels(add_indicators(htf_market), config["htf"]) if not htf_market.empty else htf_market
             bias_value, _ = htf_bias(htf_processed) if not htf_processed.empty else ("Unknown", None)
+            fresh, freshness_note = candle_freshness_status(raw_market, tf)
             last_row = market_data.iloc[-1]
             best_side, best_score, _ = score_signal(last_row, bias_value, threshold=None, min_confirmations=profile["min_confirmations"])
             best_side, ml_prob, ml_note = apply_learning_gate(best_side, last_row, bias_value, best_score, profile)
+            if session["Session status"] != "OPEN":
+                best_side = "WAIT"
+            elif not fresh:
+                best_side = "WAIT"
             signal_value = best_side if best_side in ("BUY", "SELL") else "WAIT"
             rows.append({
                 "Market": name, "Symbol": config["symbol"], "TF": tf,
@@ -406,14 +465,16 @@ def scan_all_market_signals():
                 "ML win probability": round(ml_prob * 100, 1) if ml_prob is not None else None,
                 "RSI": round(float(last_row["RSI"]), 1) if pd.notna(last_row["RSI"]) else None,
                 "ADX": round(float(last_row["ADX"]), 1) if pd.notna(last_row["ADX"]) else None,
-                "Data status": "OK"
+                "Data status": "OK" if fresh else f"STALE: {freshness_note}",
+                **session
             })
         except Exception as exc:
             rows.append({
                 "Market": name, "Symbol": config["symbol"], "TF": tf,
                 "Last close": None, "HTF bias": "Unknown",
                 "Signal": "DATA ERROR", "Signal strength (diagnostic)": None,
-                "RSI": None, "ADX": None, "Data status": str(exc)[:120]
+                "RSI": None, "ADX": None, "Data status": str(exc)[:120],
+                **market_session_status(name, config)
             })
     return pd.DataFrame(rows)
 
@@ -957,7 +1018,7 @@ else:
     st.warning(f"WAIT — no setup passed all filters. Best-side Signal strength: {score}/100. {ml_note}")
 
 st.subheader("Automatic paper trading")
-st.caption("Paper trading only. Automatic scanning checks all configured markets about every 60 seconds while this page stays open and connected. Cloud sleep, browser disconnection, or provider delays can interrupt scans.")
+st.caption("Paper trading only. On this Streamlit Cloud deployment, scans run about every 60 seconds only while the app session is active. This is NOT a persistent background worker: cloud sleep or session disconnects can interrupt scans. True unattended operation requires a separately hosted worker (for example, on a VPS) and persistent storage.")
 st.success("Automatic paper scanner: RUNNING")
 
 
@@ -973,6 +1034,14 @@ def run_all_market_scan():
             scan_htf_raw = download_data(scan_cfg["symbol"], scan_cfg["htf"])
             if scan_raw.empty or len(scan_raw) < 60:
                 all_events.append(f"{scan_name}: skipped; insufficient market data.")
+                continue
+            session = market_session_status(scan_name, scan_cfg)
+            if session["Session status"] != "OPEN":
+                all_events.append(f"{scan_name}: no new entries; market session is {session['Session status']} ({session['Session detail']}).")
+                continue
+            fresh, freshness_note = candle_freshness_status(scan_raw, scan_tf)
+            if not fresh:
+                all_events.append(f"{scan_name}: entries blocked because data is stale/uncertain ({freshness_note}).")
                 continue
             scan_data = add_adaptive_levels(add_indicators(scan_raw), scan_tf)
             scan_htf = add_adaptive_levels(add_indicators(scan_htf_raw), scan_cfg["htf"]) if not scan_htf_raw.empty else pd.DataFrame()
