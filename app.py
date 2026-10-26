@@ -1,5 +1,6 @@
 import math
 from datetime import datetime, timezone, date, timedelta
+from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -54,6 +55,36 @@ def load_trade_log():
     except Exception:
         pass
     return []
+
+def market_schedule_status(market_name, now_utc=None):
+    """Approximate exchange/session status; broker holidays and symbol-specific hours may differ."""
+    now_utc = now_utc or datetime.now(timezone.utc)
+    kind = MARKETS.get(market_name, {}).get("kind", "forex")
+    if kind == "crypto":
+        return "OPEN 24/7", "Always open (crypto market)"
+    ny = now_utc.astimezone(ZoneInfo("America/New_York"))
+    # Common FX and CME-style metals/energy weekly schedule, approximate in ET.
+    weekday, mins = ny.weekday(), ny.hour * 60 + ny.minute
+    if weekday == 5 or (weekday == 6 and mins < 18 * 60) or (weekday == 4 and mins >= 17 * 60):
+        return "CLOSED", "Weekend closure (approx. reopens Sunday 18:00 ET)"
+    if 17 * 60 <= mins < 18 * 60:
+        return "DAILY BREAK", "Daily maintenance break (approx. 17:00–18:00 ET)"
+    return "OPEN", "Weekday session (approximate hours; verify broker schedule)"
+
+def current_global_sessions(now_utc=None):
+    now_utc = now_utc or datetime.now(timezone.utc)
+    sessions = [
+        ("Sydney", "Australia/Sydney", 8, 17),
+        ("Tokyo", "Asia/Tokyo", 9, 18),
+        ("London", "Europe/London", 8, 17),
+        ("New York", "America/New_York", 8, 17),
+    ]
+    rows = []
+    for name, tz_name, start_hour, end_hour in sessions:
+        local = now_utc.astimezone(ZoneInfo(tz_name))
+        is_open = local.weekday() < 5 and start_hour <= local.hour < end_hour
+        rows.append({"Session": name, "Status": "OPEN" if is_open else "CLOSED", "Local time": local.strftime("%H:%M"), "Session hours": f"{start_hour:02d}:00–{end_hour:02d}:00 local"})
+    return pd.DataFrame(rows)
 
 def download_data(symbol, interval):
     yf_interval, period = INTERVAL_MAP[interval]
@@ -372,6 +403,150 @@ def score_signal(last, bias, threshold=None, min_confirmations=6):
 
 
 @st.cache_data(ttl=55, show_spinner=False)
+def detect_market_regime(last):
+    """Classify broad conditions using only the latest completed indicator row."""
+    adx = last.get("ADX", np.nan)
+    close, mid = last.get("Close", np.nan), last.get("BB_Mid", np.nan)
+    upper, lower = last.get("BB_Upper", np.nan), last.get("BB_Lower", np.nan)
+    atr = last.get("ATR", np.nan)
+    width = ((upper - lower) / abs(mid)) if pd.notna(upper) and pd.notna(lower) and pd.notna(mid) and mid else np.nan
+    atr_pct = (atr / abs(close) * 100) if pd.notna(atr) and pd.notna(close) and close else np.nan
+    if pd.notna(adx) and adx >= 25:
+        regime = "TRENDING"
+    elif pd.notna(width) and width < 0.012:
+        regime = "SQUEEZE / QUIET"
+    elif pd.notna(adx) and adx < 18:
+        regime = "RANGING"
+    else:
+        regime = "MIXED"
+    return regime, width, atr_pct
+
+
+def evaluate_multi_strategy(last, bias="Unknown"):
+    """Rule-based strategy ensemble; separate votes, not a claim of universal profitability.
+    Strategies: trend, mean reversion, breakout, momentum, range, volatility expansion,
+    candle/price action, and liquidity-sweep proxy. News strategy requires an external feed.
+    """
+    def n(key):
+        v = last.get(key, np.nan)
+        return float(v) if pd.notna(v) else np.nan
+    c, o, h, l = n("Close"), n("Open"), n("High"), n("Low")
+    prev_c = n("PrevClose")
+    ema9, ema21, ema50, ema200 = n("EMA9"), n("EMA21"), n("EMA50"), n("EMA200")
+    rsi, adx, pdi, mdi = n("RSI"), n("ADX"), n("PLUS_DI"), n("MINUS_DI")
+    bb_mid, bb_up, bb_low = n("BB_Mid"), n("BB_Upper"), n("BB_Lower")
+    sup, res, atr, relvol, vwap = n("Support"), n("Resistance"), n("ATR"), n("RelVol"), n("VWAP")
+    mfi = n("MFI")
+    votes = {"Trend following": "WAIT", "Mean reversion": "WAIT", "Breakout": "WAIT",
+             "Momentum": "WAIT", "Range trading": "WAIT", "Volatility expansion": "WAIT",
+             "Price action": "WAIT", "Liquidity sweep (proxy)": "WAIT"}
+    # Trend following
+    if all(np.isfinite(x) for x in [ema9, ema21, ema50, pdi, mdi, adx]):
+        if ema9 > ema21 > ema50 and pdi > mdi and adx >= 18 and (bias != "Bearish"):
+            votes["Trend following"] = "BUY"
+        elif ema9 < ema21 < ema50 and mdi > pdi and adx >= 18 and (bias != "Bullish"):
+            votes["Trend following"] = "SELL"
+    # Mean reversion: oversold/overbought extreme near outer band, filtered by moderate ADX.
+    if all(np.isfinite(x) for x in [c, bb_low, bb_up, rsi, adx]):
+        if c <= bb_low and rsi <= 30 and adx < 28 and (not np.isfinite(mfi) or mfi < 30): votes["Mean reversion"] = "BUY"
+        elif c >= bb_up and rsi >= 70 and adx < 28 and (not np.isfinite(mfi) or mfi > 70): votes["Mean reversion"] = "SELL"
+    # Breakout of previous rolling support/resistance (levels are shifted to avoid look-ahead).
+    if all(np.isfinite(x) for x in [c, sup, res, atr]):
+        if c > res and (not np.isfinite(relvol) or relvol >= 1.1): votes["Breakout"] = "BUY"
+        elif c < sup and (not np.isfinite(relvol) or relvol >= 1.1): votes["Breakout"] = "SELL"
+    # Momentum
+    if all(np.isfinite(x) for x in [c, prev_c, rsi, pdi, mdi]):
+        if c > prev_c and 55 <= rsi <= 78 and pdi > mdi: votes["Momentum"] = "BUY"
+        elif c < prev_c and 22 <= rsi <= 45 and mdi > pdi: votes["Momentum"] = "SELL"
+    # Range trading: low ADX and price near range edge, without a confirmed breakout.
+    if all(np.isfinite(x) for x in [c, sup, res, adx]) and res > sup and adx < 20:
+        span = res - sup
+        if c <= sup + 0.18 * span: votes["Range trading"] = "BUY"
+        elif c >= res - 0.18 * span: votes["Range trading"] = "SELL"
+    # Volatility expansion: wide candle relative to ATR, aligned with candle direction and volume.
+    if all(np.isfinite(x) for x in [c, o, h, l, atr]) and atr > 0 and (h-l) >= 1.25*atr and c != o:
+        if c > o and (not np.isfinite(relvol) or relvol >= 1.0): votes["Volatility expansion"] = "BUY"
+        elif c < o and (not np.isfinite(relvol) or relvol >= 1.0): votes["Volatility expansion"] = "SELL"
+    # Price action: strong body closing near candle extreme, with a simple trend alignment.
+    if all(np.isfinite(x) for x in [c, o, h, l, ema21]) and h > l:
+        body = abs(c-o); close_position = (c-l)/(h-l)
+        if c > o and body/(h-l) >= 0.60 and close_position >= 0.8 and c > ema21: votes["Price action"] = "BUY"
+        elif c < o and body/(h-l) >= 0.60 and close_position <= 0.2 and c < ema21: votes["Price action"] = "SELL"
+    # Liquidity-sweep proxy: prior rolling level swept intrabar then close returns inside.
+    prev_sup = n("PrevSupport"); prev_res = n("PrevResistance")
+    if all(np.isfinite(x) for x in [c, h, l, prev_sup, prev_res]):
+        if l < prev_sup and c > prev_sup: votes["Liquidity sweep (proxy)"] = "BUY"
+        elif h > prev_res and c < prev_res: votes["Liquidity sweep (proxy)"] = "SELL"
+    buys = sum(v == "BUY" for v in votes.values())
+    sells = sum(v == "SELL" for v in votes.values())
+    regime, width, atr_pct = detect_market_regime(last)
+    # Require two independent strategy votes and reject ties/conflicting majorities.
+    if buys >= 2 and buys > sells: side = "BUY"
+    elif sells >= 2 and sells > buys: side = "SELL"
+    else: side = "WAIT"
+    strength = round(100 * max(buys, sells) / len(votes))
+    return side, strength, votes, regime, buys, sells
+
+
+
+def adaptive_strategy_selection(votes, regime, market_name, timeframe, trades):
+    """Choose strategies per symbol/timeframe using regime priors plus completed-trade evidence.
+
+    Performance evidence is only used when closed trades explicitly record the strategy names.
+    With too little history, the engine falls back to conservative regime-based priors.
+    """
+    regime_priors = {
+        "TRENDING": ["Trend following", "Momentum", "Breakout", "Price action", "Volatility expansion"],
+        "RANGING": ["Mean reversion", "Range trading", "Liquidity sweep (proxy)"],
+        "SQUEEZE / QUIET": ["Breakout", "Volatility expansion", "Range trading"],
+        "MIXED": ["Trend following", "Breakout", "Mean reversion", "Momentum", "Price action", "Range trading"],
+    }
+    priors = regime_priors.get(regime, regime_priors["MIXED"])
+    df = pd.DataFrame(trades or [])
+    perf = {}
+    if not df.empty and "Strategy names" in df.columns and "PnL (estimated price-units)" in df.columns:
+        df = df.copy()
+        if "Status" in df.columns:
+            df = df[df["Status"].astype(str).str.upper().eq("CLOSED")]
+        if "Market" in df.columns:
+            df = df[df["Market"].astype(str).eq(str(market_name))]
+        if "TF" in df.columns:
+            df = df[df["TF"].astype(str).eq(str(timeframe))]
+        df["_pnl"] = pd.to_numeric(df["PnL (estimated price-units)"], errors="coerce")
+        for _, row in df.dropna(subset=["_pnl"]).iterrows():
+            for strategy in str(row.get("Strategy names", "")).split("; "):
+                if strategy and strategy != "nan":
+                    perf.setdefault(strategy, []).append(float(row["_pnl"]))
+    # Prioritized strategies first; completed results can move strategies up/down.
+    candidates = list(dict.fromkeys(priors + list(votes.keys())))
+    def rank_key(strategy):
+        results = perf.get(strategy, [])[-30:]
+        prior_bonus = 0.08 if strategy in priors else 0.0
+        if len(results) < 5:
+            # Do not overfit a tiny sample: regime fit dominates until enough outcomes accrue.
+            return (prior_bonus, 0.0, 0.0)
+        wins = sum(x > 0 for x in results)
+        avg_pnl = float(np.mean(results))
+        # Mildly shrink observed win rate toward 50%; allow enough evidence to override priors.
+        shrunk_wr = (wins + 2.5) / (len(results) + 5.0)
+        return (prior_bonus + (shrunk_wr - 0.5) + np.tanh(avg_pnl) * 0.05, avg_pnl, len(results))
+    ranked = sorted(candidates, key=rank_key, reverse=True)
+    selected = ranked[:3]
+    active_votes = {name: votes.get(name, "WAIT") for name in selected}
+    buys = sum(v == "BUY" for v in active_votes.values())
+    sells = sum(v == "SELL" for v in active_votes.values())
+    # Need at least two selected strategies to agree; no single-strategy entries.
+    if buys >= 2 and buys > sells:
+        side = "BUY"
+    elif sells >= 2 and sells > buys:
+        side = "SELL"
+    else:
+        side = "WAIT"
+    learned_count = sum(len(perf.get(name, [])) >= 5 for name in selected)
+    note = "Performance-adaptive" if learned_count else "Regime-prior warm-up (collecting per-strategy trade history)"
+    return side, selected, active_votes, buys, sells, note, perf
+
+
 def scan_all_market_signals():
     """Fetch and evaluate each configured market for the overview dashboard.
     This reports signals only; it does not open paper positions for every market.
@@ -392,10 +567,16 @@ def scan_all_market_signals():
                 })
                 continue
             market_data = add_adaptive_levels(add_indicators(raw_market), tf)
+            market_data["PrevClose"] = market_data["Close"].shift(1)
+            market_data["PrevSupport"] = market_data["Low"].rolling(20).min().shift(2)
+            market_data["PrevResistance"] = market_data["High"].rolling(20).max().shift(2)
             htf_processed = add_adaptive_levels(add_indicators(htf_market), config["htf"]) if not htf_market.empty else htf_market
             bias_value, _ = htf_bias(htf_processed) if not htf_processed.empty else ("Unknown", None)
             last_row = market_data.iloc[-1]
-            best_side, best_score, _ = score_signal(last_row, bias_value, threshold=None, min_confirmations=profile["min_confirmations"])
+            _, raw_score, strategy_votes, regime, raw_buys, raw_sells = evaluate_multi_strategy(last_row, bias_value)
+            best_side, selected_strategies, active_votes, buy_votes, sell_votes, adaptive_note, _ = adaptive_strategy_selection(
+                strategy_votes, regime, name, tf, st.session_state.get("trades", load_trade_log()))
+            best_score = round(100 * max(buy_votes, sell_votes) / max(len(active_votes), 1))
             best_side, ml_prob, ml_note = apply_learning_gate(best_side, last_row, bias_value, best_score, profile)
             signal_value = best_side if best_side in ("BUY", "SELL") else "WAIT"
             rows.append({
@@ -403,6 +584,8 @@ def scan_all_market_signals():
                 "Last close": round(float(last_row["Close"]), 5),
                 "HTF bias": bias_value, "Signal": (best_side if best_side in ("BUY", "SELL") else "WAIT"),
                 "Signal strength (diagnostic)": int(best_score),
+                "Market regime": regime, "Strategy BUY votes": buy_votes, "Strategy SELL votes": sell_votes,
+                "Selected strategies": ", ".join(selected_strategies), "Selection mode": adaptive_note,
                 "ML win probability": round(ml_prob * 100, 1) if ml_prob is not None else None,
                 "RSI": round(float(last_row["RSI"]), 1) if pd.notna(last_row["RSI"]) else None,
                 "ADX": round(float(last_row["ADX"]), 1) if pd.notna(last_row["ADX"]) else None,
@@ -521,6 +704,8 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
                 "Stop": pos.get("InitialStop", pos.get("Stop")), "TP1": pos.get("TP1"), "TP2": pos.get("TP2"),
                 "Exit": closed_at, "Exit reason": "SL / break-even stop", "Qty": qty,
                 "PnL (estimated price-units)": pnl, "Status": "CLOSED",
+                "Strategy names": pos.get("Strategy names", ""), "Selected strategy set": pos.get("Selected strategy set", ""),
+                "Market regime": pos.get("Market regime", "Unknown"),
                 **{k: pos.get(k, np.nan) for k in ML_FEATURES}
             })
             events.append(f"Closed {side} {market_name} at stop-loss; estimated paper P&L {pnl:.2f} price-units.")
@@ -547,6 +732,8 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
                 "Stop": pos.get("InitialStop", pos.get("Stop")), "TP1": pos.get("TP1"), "TP2": pos.get("TP2"),
                 "Exit": float(pos["TP2"]), "Exit reason": "TP2", "Qty": qty,
                 "PnL (estimated price-units)": pnl, "Status": "CLOSED",
+                "Strategy names": pos.get("Strategy names", ""), "Selected strategy set": pos.get("Selected strategy set", ""),
+                "Market regime": pos.get("Market regime", "Unknown"),
                 **{k: pos.get(k, np.nan) for k in ML_FEATURES}
             })
             events.append(f"TP2 hit on {market_name}; position closed, estimated paper P&L {pnl:.2f} price-units.")
@@ -600,10 +787,13 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
 
     current_trades = st.session_state.get("trades", load_trade_log())
     profile = learning_profile(current_trades)
-    side, score, checks = score_signal(last, bias, threshold, profile["min_confirmations"])
+    _, raw_score, checks, regime, raw_buy_votes, raw_sell_votes = evaluate_multi_strategy(last, bias)
+    side, selected_strategies, active_votes, buy_votes, sell_votes, adaptive_note, strategy_perf = adaptive_strategy_selection(
+        checks, regime, market_name, timeframe, current_trades)
+    score = round(100 * max(buy_votes, sell_votes) / max(len(active_votes), 1))
     side, ml_probability, ml_note = apply_learning_gate(side, last, bias, score, profile)
     if side in ("BUY", "SELL"):
-        events.append(ml_note)
+        events.append(f"Strategy selector: {adaptive_note}; selected: {', '.join(selected_strategies)}. {ml_note}")
         levels = make_trade_levels(last, side, risk_pct, rr2)
         if levels:
             entry = float(levels["entry"])
@@ -630,12 +820,14 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
                     "Opened": datetime.now().isoformat(timespec="seconds"), "Market": market_name,
                     "Symbol": symbol, "Timeframe": timeframe, "Side": side, "Score": score,
                     "Entry": entry, "Stop": stop, "TP1": tp1, "TP2": tp2,
+                    "Strategy names": "; ".join([k for k,v in active_votes.items() if v == side]),
+                    "Selected strategy set": "; ".join(selected_strategies), "Market regime": regime,
                     "Qty": qty, "RiskBudget": risk_cash, "TP1_Hit": False, "RealizedPnL": 0.0,
                     **extract_ml_features(last, bias, score, side), "Status": "OPEN"
                 }
                 open_positions.append(pos)
                 trades_today += 1
-                events.append(f"Automatically opened paper {side} on {market_name} at {entry:.5f} (directional signal).")
+                events.append(f"Automatically opened paper {side} on {market_name} at {entry:.5f}; selected strategies: {', '.join(k for k,v in active_votes.items() if v == side)}.")
             else:
                 events.append("Signal rejected: stop distance was zero.")
     else:
@@ -817,7 +1009,7 @@ def run_backtest(df, htf, timeframe, htf_timeframe, threshold, risk_pct, rr2, st
 # UI
 # -----------------------------
 st.title("🧠 AI Brain — Paper Trading Lab")
-st.caption("Rule-based scoring with standard indicators + multi-timeframe filters + automatic simulated trade entry/exit. Paper trading only; no broker, wallet, or live-order connection.")
+st.caption("Multi-strategy paper-trading research engine with trend, mean-reversion, breakout, momentum, range, volatility-expansion, price-action and liquidity-sweep proxy strategies. Paper trading only; no broker, wallet, or live-order connection.")
 with st.sidebar:
     st.header("Bot settings")
     # Keep changes staged until the user explicitly confirms them.
@@ -846,7 +1038,7 @@ with st.sidebar:
         st.session_state.settings_max_trades_per_day_applied = max_trades_per_day
         st.session_state.settings_rr2_applied = rr2
         st.success("Settings confirmed for this session.")
-    st.caption("The Brain logic evaluates trend, momentum, DI, VWAP, volatility and higher-timeframe alignment. Entries are simulated paper trades only.")
+    st.caption("The multi-strategy engine evaluates trend, mean reversion, breakout, momentum, range, volatility expansion, price action and a liquidity-sweep proxy. Entries are simulated paper trades only.")
 
 if "balance" not in st.session_state:
     st.session_state.balance = STARTING_BALANCE
@@ -899,6 +1091,17 @@ col4.metric("Risk per setup", f"{risk_pct:.2f}%")
 
 if st.button("🔄 Refresh all market data", type="primary"):
     st.cache_data.clear()
+
+st.subheader("🕒 Market open/close & global trading sessions")
+now_utc = datetime.now(timezone.utc)
+st.caption("Session status refreshes with the dashboard. Times are approximate session hours; broker holidays, daylight-saving changes, and product-specific hours can differ.")
+market_rows = []
+for _name, _cfg in MARKETS.items():
+    _status, _note = market_schedule_status(_name, now_utc)
+    market_rows.append({"Market": _name, "Market status": _status, "Trading session / hours": _note, "Auto-trade": "ON" if st.session_state.symbol_trade_enabled.get(_name, True) else "OFF"})
+st.dataframe(pd.DataFrame(market_rows), use_container_width=True, hide_index=True)
+st.markdown("**Global forex sessions**")
+st.dataframe(current_global_sessions(now_utc), use_container_width=True, hide_index=True)
 
 st.subheader("🌐 All-market live signal dashboard")
 st.caption("Refreshes about every 60 seconds while this page stays open and connected. Yahoo Finance is an indicative data source, not guaranteed real-time broker data.")
@@ -983,12 +1186,22 @@ else:
 
 st.divider()
 st.subheader(f"📊 Detailed chart and indicators: {market_name}")
+with st.expander("🧠 Multi-strategy engine: strategy votes & market regime", expanded=True):
+    st.write("The engine evaluates eight rule-based strategy families, detects a broad market regime, then selects up to three strategies per symbol/timeframe. It uses closed-trade outcomes recorded for that exact market and timeframe when enough examples exist; otherwise it uses regime-based priors during warm-up. At least two selected strategies must agree. This is adaptive research logic, not literally every strategy worldwide. Live news trading is not active without an economic-calendar/news feed.")
+    if not overview.empty:
+        cols = [c for c in ["Market", "Signal", "Market regime", "Strategy BUY votes", "Strategy SELL votes", "Selected strategies", "Selection mode", "Data status"] if c in overview.columns]
+        st.dataframe(overview[cols], use_container_width=True, hide_index=True)
+
 st.caption(f"Per-symbol auto-trading is {'ON' if st.session_state.symbol_trade_enabled.get(market_name, True) else 'OFF'} for {market_name}. Change it in the per-symbol switches above. The Market dropdown only selects the detailed chart.")
 
 with st.spinner("Downloading selected-market candles and evaluating the AI Brain..."):
     raw = download_data(cfg["symbol"], signal_tf)
     htf = download_data(cfg["symbol"], htf_tf)
     data = add_adaptive_levels(add_indicators(raw), signal_tf) if not raw.empty else pd.DataFrame()
+    if not data.empty:
+        data["PrevClose"] = data["Close"].shift(1)
+        data["PrevSupport"] = data["Low"].rolling(20).min().shift(2)
+        data["PrevResistance"] = data["High"].rolling(20).max().shift(2)
     htf = add_adaptive_levels(add_indicators(htf), htf_tf) if not htf.empty else htf
     bias, htf_last = htf_bias(htf) if not htf.empty else ("Unknown", None)
 
@@ -999,7 +1212,8 @@ if data.empty or len(data) < 60:
 
 last = data.iloc[-1]
 learning = learning_profile(st.session_state.trades)
-side, score, checks = score_signal(last, bias, score_threshold, learning["min_confirmations"])
+side, score, strategy_votes, regime, buy_votes, sell_votes = evaluate_multi_strategy(last, bias)
+checks = strategy_votes
 side, ml_probability, ml_note = apply_learning_gate(side, last, bias, score, learning)
 daily_loss_reached = ((st.session_state.daily_start - st.session_state.balance) / max(st.session_state.daily_start, 1) * 100) >= max_daily_loss
 if st.session_state.trades_today >= max_trades_per_day:
@@ -1056,6 +1270,9 @@ def run_all_market_scan():
                 all_events.append(f"{scan_name}: skipped; insufficient market data.")
                 continue
             scan_data = add_adaptive_levels(add_indicators(scan_raw), scan_tf)
+            scan_data["PrevClose"] = scan_data["Close"].shift(1)
+            scan_data["PrevSupport"] = scan_data["Low"].rolling(20).min().shift(2)
+            scan_data["PrevResistance"] = scan_data["High"].rolling(20).max().shift(2)
             scan_htf = add_adaptive_levels(add_indicators(scan_htf_raw), scan_cfg["htf"]) if not scan_htf_raw.empty else pd.DataFrame()
             scan_bias, _ = htf_bias(scan_htf) if not scan_htf.empty else ("Unknown", None)
             (st.session_state.balance, st.session_state.trades_today,
