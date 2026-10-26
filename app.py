@@ -29,7 +29,8 @@ st.set_page_config(page_title="AI Paper Trading Brain", page_icon="🧠", layout
 STARTING_BALANCE = 100.0  # USD-denominated virtual starting balance
 MARKETS = {
     "Gold (XAUUSD)": {"symbol": "GC=F", "signal_tf": "5m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "30m", "kind": "gold"},
-    "US Oil (WTI proxy)": {"symbol": "CL=F", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "30m", "kind": "oil"},
+    "XAGUSD Silver (futures proxy)": {"symbol": "SI=F", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "30m", "kind": "silver"},
+    "Crude Oil (WTI proxy)": {"symbol": "CL=F", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "30m", "kind": "oil"},
     "EUR/USD": {"symbol": "EURUSD=X", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "30m", "kind": "forex"},
     "GBP/USD": {"symbol": "GBPUSD=X", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "30m", "kind": "forex"},
     "AUD/USD": {"symbol": "AUDUSD=X", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "30m", "kind": "forex"},
@@ -1218,7 +1219,7 @@ with st.spinner("Downloading selected-market candles and evaluating the AI Brain
 
 if data.empty or len(data) < 60:
     st.error("Market data is unavailable or too short from Yahoo Finance right now. Try Refresh, another symbol, or another timeframe.")
-    st.info("Yahoo Finance intraday data can be delayed, incomplete, or unavailable. Gold uses GC=F futures as a proxy, not a broker's exact XAUUSD CFD quote.")
+    st.info("Yahoo Finance intraday data can be delayed, incomplete, or unavailable. Gold uses GC=F futures as a proxy, XAGUSD Silver uses SI=F futures as a proxy, and Crude Oil uses CL=F futures as a proxy; these may differ from broker CFD/spot quotes.")
     st.stop()
 
 last = data.iloc[-1]
