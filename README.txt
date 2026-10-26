@@ -1,31 +1,25 @@
-AI Brain Self-Learning Paper Trading Bot — Market Session Upgrade
+AI Brain Self-Learning Paper Trading Bot — Updated Dashboard
 
 Files:
-- app.py: Streamlit paper-trading app with the existing trade-outcome learning layer, optional ML model, all-market scanner, and estimated market-session intelligence.
+- app.py: Streamlit paper-trading app with the existing all-market scanner, indicator diagnostics, self-learning baseline, paper positions, trade history, and simplified backtest.
 - requirements.txt: Python dependencies.
 
-Run:
-1. Use Python 3.10+.
+New dashboard features in this update:
+- Daily performance report: closed trades, wins, losses, win rate, and net estimated P&L by closing date.
+- Select a date to inspect its completed trades, including market, side, entry/exit, targets, stop, and estimated P&L.
+- Downloadable daily report CSV.
+- Individual ON/OFF toggle for every market. OFF prevents new automatic paper entries for that symbol; existing positions are still managed for stop-loss/targets.
+- All-market analysis refreshes about every 60 seconds while the Streamlit page remains open and connected. Data is cached for about 55 seconds to limit repeated requests.
+
+Run locally:
+1. Install Python 3.10+.
 2. In the project folder run: pip install -r requirements.txt
 3. Run: streamlit run app.py
 
-Market-session changes:
-- The all-market scanner displays Session status, Session detail, and Session source.
-- Automatic paper entries are blocked when the configured schedule says CLOSED.
-- New entries are also blocked when the latest candle timestamp is stale or cannot be verified.
-- Crypto is treated as a 24/7 market schedule, but stale/missing provider data still blocks new entries.
-- Forex and futures session times are approximate public schedule estimates in New York and Chicago time zones respectively. Holidays, special sessions, broker-specific CFD hours, and symbol-specific differences may not be fully represented.
-- Yahoo Finance does not provide broker-confirmed tradability. This version does NOT yet connect to MT5. MT5 broker-specific session checks can only be enabled after an MT5 connector is configured.
-
-Self-learning:
-- The rule-adaptation layer adjusts required signal confirmations based on recent completed, feature-rich paper-trade outcomes (bounded to 5–7 confirmations).
-- Logistic-regression ML uses entry-time indicator features and completed outcomes. It requires at least 30 eligible completed trades, both outcome classes, and at least 8 wins and 8 losses.
-- Before enough eligible data exists, the bot falls back to rule-based signals.
-- Older records without entry features do not count toward ML training. Model training is a simple baseline, not advanced deep learning.
-
-Important operating limits:
-- Paper trading only. No broker, exchange, wallet, or real-money order connection is included.
-- Streamlit Cloud's page refresh loop is not an independent background worker. Scanning can stop when the app session disconnects or the cloud app sleeps. This package does not make the bot run continuously after the dashboard closes or the phone is off.
-- True unattended execution needs a separately hosted worker (for example, a VPS), reliable persistent storage, health checks, and restart handling. VPS deployment remains a future step.
-- Yahoo Finance intraday data can be delayed, incomplete, or stale. Session status from this package is an estimate, not a guarantee that a broker is accepting orders.
-- Paper P&L and position sizing are simplified estimates; probabilities and backtests do not guarantee future results.
+Important limitations:
+- Paper trading only. No broker, exchange, wallet, private key, or real-money order connection is included.
+- The bot uses Yahoo Finance as a market-data source. Intraday data may be delayed, stale, incomplete, or unavailable; the app cannot guarantee true real-time broker quotes.
+- The displayed P&L is an approximate simulator estimate in price-units, not reliable INR P&L. Broker contract sizes, pip/tick values, commissions, spread, swaps/funding and slippage are not fully modeled.
+- The self-learning model is a simple baseline and requires enough completed feature-rich paper trades before training. Win rates and predicted probabilities are not guarantees.
+- Automatic scanning stops when the app/browser session sleeps, disconnects, or the hosting service suspends the app. This is not a persistent background worker.
+- Test carefully and inspect data freshness, position management, and out-of-sample results before considering any real-money deployment.

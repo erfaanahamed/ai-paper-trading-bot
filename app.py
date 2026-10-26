@@ -1,5 +1,5 @@
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date, timedelta
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -38,58 +38,6 @@ MARKETS = {
     "ETH/USD": {"symbol": "ETH-USD", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "30m", "kind": "crypto"},
 }
 INTERVAL_MAP = {"5m": ("5m", "5d"), "15m": ("15m", "60d"), "30m": ("30m", "60d")}
-
-# -----------------------------
-# Market session intelligence (Yahoo Finance schedule estimates + MT5-ready)
-# -----------------------------
-from zoneinfo import ZoneInfo
-
-def market_session_status(market_name, config, now_utc=None):
-    """Estimate session state from public market conventions.
-    Yahoo Finance does not expose broker tradability; MT5 can later override this
-    with broker-specific symbol sessions when an MT5 connector is configured.
-    """
-    now_utc = now_utc or datetime.now(timezone.utc)
-    kind = config.get("kind", "")
-    if kind == "crypto":
-        return {"Session status": "OPEN", "Session detail": "24/7 market (provider data still checked)", "Session source": "Schedule estimate"}
-    if kind == "forex":
-        now_ny = now_utc.astimezone(ZoneInfo("America/New_York"))
-        wd = now_ny.weekday()  # Monday=0, Sunday=6
-        t = now_ny.time()
-        open_now = not (wd == 5 or (wd == 6 and t < datetime.strptime("17:00", "%H:%M").time())
-                        or (wd == 4 and t >= datetime.strptime("17:00", "%H:%M").time()))
-        detail = "Approx. Sun 17:00–Fri 17:00 New York time"
-        return {"Session status": "OPEN" if open_now else "CLOSED", "Session detail": detail, "Session source": "Schedule estimate"}
-    if kind in ("gold", "oil"):
-        now_ct = now_utc.astimezone(ZoneInfo("America/Chicago"))
-        wd, t = now_ct.weekday(), now_ct.time()
-        t1600 = datetime.strptime("16:00", "%H:%M").time()
-        t1700 = datetime.strptime("17:00", "%H:%M").time()
-        closed_weekend = wd == 5 or (wd == 6 and t < t1700) or (wd == 4 and t >= t1600)
-        daily_break = t >= t1600 and t < t1700
-        open_now = not closed_weekend and not daily_break
-        detail = "Approx. Sun–Fri, 17:00–16:00 Chicago time; daily break 16:00–17:00"
-        return {"Session status": "OPEN" if open_now else "CLOSED", "Session detail": detail, "Session source": "Futures schedule estimate"}
-    return {"Session status": "UNKNOWN", "Session detail": "No configured schedule", "Session source": "Unknown"}
-
-def candle_freshness_status(df, timeframe, now_utc=None):
-    """Reject entries on old candles; tolerate some provider lag."""
-    if df is None or df.empty:
-        return False, "No candles"
-    now_utc = now_utc or datetime.now(timezone.utc)
-    try:
-        last_ts = pd.Timestamp(df.index[-1])
-        if last_ts.tzinfo is None:
-            last_ts = last_ts.tz_localize("UTC")
-        last_ts = last_ts.tz_convert("UTC")
-        mins = int(timeframe.replace("m", ""))
-        age_min = max(0.0, (now_utc - last_ts.to_pydatetime()).total_seconds() / 60.0)
-        # Candles are timestamped at their start; allow two bars plus 10 minutes.
-        limit = max(20, mins * 2 + 10)
-        return age_min <= limit, f"Latest candle age {age_min:.0f} min (limit {limit} min)"
-    except Exception:
-        return False, "Unable to verify candle timestamp"
 
 
 TRADE_LOG_PATH = Path("paper_trade_history.csv")
@@ -432,7 +380,6 @@ def scan_all_market_signals():
     profile = learning_profile(st.session_state.get("trades", load_trade_log())) if "trades" in st.session_state else learning_profile(load_trade_log())
     for name, config in MARKETS.items():
         tf = config["signal_tf"]
-        session = market_session_status(name, config)
         try:
             raw_market = download_data(config["symbol"], tf)
             htf_market = download_data(config["symbol"], config["htf"])
@@ -441,21 +388,15 @@ def scan_all_market_signals():
                     "Market": name, "Symbol": config["symbol"], "TF": tf,
                     "Last close": None, "HTF bias": "Unknown",
                     "Signal": "DATA UNAVAILABLE", "Signal strength (diagnostic)": None,
-                    "RSI": None, "ADX": None, "Data status": "Insufficient candles or provider returned no data",
-                    **session
+                    "RSI": None, "ADX": None, "Data status": "Insufficient candles or provider returned no data"
                 })
                 continue
             market_data = add_adaptive_levels(add_indicators(raw_market), tf)
             htf_processed = add_adaptive_levels(add_indicators(htf_market), config["htf"]) if not htf_market.empty else htf_market
             bias_value, _ = htf_bias(htf_processed) if not htf_processed.empty else ("Unknown", None)
-            fresh, freshness_note = candle_freshness_status(raw_market, tf)
             last_row = market_data.iloc[-1]
             best_side, best_score, _ = score_signal(last_row, bias_value, threshold=None, min_confirmations=profile["min_confirmations"])
             best_side, ml_prob, ml_note = apply_learning_gate(best_side, last_row, bias_value, best_score, profile)
-            if session["Session status"] != "OPEN":
-                best_side = "WAIT"
-            elif not fresh:
-                best_side = "WAIT"
             signal_value = best_side if best_side in ("BUY", "SELL") else "WAIT"
             rows.append({
                 "Market": name, "Symbol": config["symbol"], "TF": tf,
@@ -465,16 +406,14 @@ def scan_all_market_signals():
                 "ML win probability": round(ml_prob * 100, 1) if ml_prob is not None else None,
                 "RSI": round(float(last_row["RSI"]), 1) if pd.notna(last_row["RSI"]) else None,
                 "ADX": round(float(last_row["ADX"]), 1) if pd.notna(last_row["ADX"]) else None,
-                "Data status": "OK" if fresh else f"STALE: {freshness_note}",
-                **session
+                "Data status": "OK"
             })
         except Exception as exc:
             rows.append({
                 "Market": name, "Symbol": config["symbol"], "TF": tf,
                 "Last close": None, "HTF bias": "Unknown",
                 "Signal": "DATA ERROR", "Signal strength (diagnostic)": None,
-                "RSI": None, "ADX": None, "Data status": str(exc)[:120],
-                **market_session_status(name, config)
+                "RSI": None, "ADX": None, "Data status": str(exc)[:120]
             })
     return pd.DataFrame(rows)
 
@@ -641,6 +580,12 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
         processed[market_key] = bar_time
         st.session_state.auto_last_processed = processed
         return balance, trades_today, daily_start_balance, open_positions, events, "Daily trade cap reached."
+
+    if not st.session_state.get("symbol_trade_enabled", {}).get(market_name, True):
+        events.append(f"{market_name}: trading is OFF; existing positions were still managed, but no new entry was allowed.")
+        processed[market_key] = bar_time
+        st.session_state.auto_last_processed = processed
+        return balance, trades_today, daily_start_balance, open_positions, events, "Symbol trading is OFF."
 
     if already_processed:
         processed[market_key] = bar_time
@@ -927,6 +872,11 @@ if "auto_daily_start_balance" not in st.session_state:
     st.session_state.auto_daily_start_balance = st.session_state.balance
 if "auto_bot_status" not in st.session_state:
     st.session_state.auto_bot_status = "RUNNING"
+if "symbol_trade_enabled" not in st.session_state:
+    st.session_state.symbol_trade_enabled = {name: True for name in MARKETS}
+else:
+    for _market_name in MARKETS:
+        st.session_state.symbol_trade_enabled.setdefault(_market_name, True)
 
 # Streamlit reruns the script on this timer while the browser session is connected.
 # Automatic paper scans are gated below so ordinary UI reruns do not trigger new entries.
@@ -950,20 +900,90 @@ col4.metric("Risk per setup", f"{risk_pct:.2f}%")
 if st.button("🔄 Refresh all market data", type="primary"):
     st.cache_data.clear()
 
-st.subheader("🌐 All-market signal dashboard")
-st.caption("Scans every configured market for BUY / SELL / WAIT signals. Automatic paper trading also evaluates all configured markets, not only the market selected in Bot settings.")
-with st.spinner("Scanning all configured markets..."):
+st.subheader("🌐 All-market live signal dashboard")
+st.caption("Refreshes about every 60 seconds while this page stays open and connected. Yahoo Finance is an indicative data source, not guaranteed real-time broker data.")
+with st.spinner("Analyzing all configured markets..."):
     overview = scan_all_market_signals()
 if not overview.empty:
-    st.dataframe(overview, use_container_width=True, hide_index=True)
+    overview_display = overview.copy()
+    overview_display.insert(0, "Auto-trade", ["ON" if st.session_state.symbol_trade_enabled.get(n, True) else "OFF" for n in overview_display["Market"]])
+    st.dataframe(overview_display, use_container_width=True, hide_index=True)
     usable = int((overview["Data status"] == "OK").sum())
     st.caption(f"Markets with usable data: {usable}/{len(overview)}. Provider data may be delayed or unavailable for some symbols.")
 else:
     st.warning("No market scan results are available yet.")
 
+with st.expander("🎛️ Per-symbol automatic trading switches", expanded=True):
+    st.caption("Turn a symbol OFF to prevent new paper entries on that market. Existing open positions will continue to be managed for stop-loss/targets.")
+    toggle_cols = st.columns(3)
+    for idx, sym_name in enumerate(MARKETS):
+        with toggle_cols[idx % 3]:
+            st.toggle(f"{sym_name}", value=st.session_state.symbol_trade_enabled.get(sym_name, True), key=f"trade_toggle_{idx}", on_change=None)
+            # Copy widget value to the shared settings map used by the scanner.
+            st.session_state.symbol_trade_enabled[sym_name] = bool(st.session_state.get(f"trade_toggle_{idx}", True))
+
+# Calendar-style daily results report from saved paper trade history.
+st.divider()
+st.subheader("🗓️ Daily trading calendar & performance report")
+trades_df = pd.DataFrame(st.session_state.trades)
+if not trades_df.empty:
+    if "Time" in trades_df.columns:
+        trades_df["_opened_dt"] = pd.to_datetime(trades_df.get("Opened", pd.Series(index=trades_df.index, dtype=object)).fillna(trades_df["Time"]), errors="coerce")
+    else:
+        trades_df["_opened_dt"] = pd.to_datetime(trades_df.get("Opened", pd.Series(index=trades_df.index, dtype=object)), errors="coerce")
+    trades_df["_closed_dt"] = pd.to_datetime(trades_df.get("Time", pd.Series(index=trades_df.index, dtype=object)), errors="coerce")
+    pnl_col = "PnL (estimated price-units)" if "PnL (estimated price-units)" in trades_df.columns else ("PnL (price units)" if "PnL (price units)" in trades_df.columns else None)
+    if pnl_col:
+        trades_df["_pnl"] = pd.to_numeric(trades_df[pnl_col], errors="coerce")
+    else:
+        trades_df["_pnl"] = np.nan
+    # Recover estimated P&L from older manual-close status text where no numeric column was saved.
+    if "Status" in trades_df.columns:
+        _status_pnl = trades_df["Status"].astype(str).str.extract(r"est\. PnL\s+(-?\d+(?:\.\d+)?)", expand=False)
+        trades_df["_pnl"] = trades_df["_pnl"].fillna(pd.to_numeric(_status_pnl, errors="coerce"))
+    closed_mask = trades_df.get("Status", pd.Series("", index=trades_df.index)).astype(str).str.contains("CLOSED|CLOSED @", case=False, regex=True) | trades_df["_pnl"].notna()
+    completed = trades_df[closed_mask].copy()
+    if not completed.empty:
+        completed["_day"] = completed["_closed_dt"].dt.date.astype(str)
+        completed["_win"] = completed["_pnl"] > 0
+        completed["_loss"] = completed["_pnl"] < 0
+        daily = completed.groupby("_day", dropna=True).agg(Trades=("_pnl", "count"), Wins=("_win", "sum"), Losses=("_loss", "sum"), **{"Net P&L (price-units)": ("_pnl", "sum")}).reset_index().rename(columns={"_day": "Date"})
+        daily["Win rate"] = np.where(daily["Trades"] > 0, daily["Wins"] / daily["Trades"] * 100, 0).round(1)
+        today_report = daily[daily["Date"] == date.today().isoformat()]
+        today_trades = int(today_report["Trades"].sum()) if not today_report.empty else 0
+        today_wins = int(today_report["Wins"].sum()) if not today_report.empty else 0
+        today_losses = int(today_report["Losses"].sum()) if not today_report.empty else 0
+        today_pnl = float(today_report["Net P&L (price-units)"].sum()) if not today_report.empty else 0.0
+        today_wr = (today_wins / today_trades * 100) if today_trades else 0.0
+        d1,d2,d3,d4,d5 = st.columns(5)
+        d1.metric("Today's closed trades", today_trades)
+        d2.metric("Today's wins", today_wins)
+        d3.metric("Today's losses", today_losses)
+        d4.metric("Today's win rate", f"{today_wr:.1f}%" if today_trades else "—")
+        d5.metric("Today's net P&L", f"{today_pnl:,.3f}")
+        st.caption("P&L is shown in estimated price-units from this simulator, not guaranteed INR profit; instrument contract values and broker costs are not modeled accurately.")
+        report_days = st.slider("Calendar report: past days", 7, 90, 30, 1, key="daily_report_days")
+        cutoff_day = (date.today() - timedelta(days=report_days - 1)).isoformat()
+        report = daily[daily["Date"] >= cutoff_day].sort_values("Date", ascending=False)
+        st.dataframe(report, use_container_width=True, hide_index=True, column_config={"Win rate": st.column_config.NumberColumn(format="%.1f%%"), "Net P&L (price-units)": st.column_config.NumberColumn(format="%.3f")})
+        st.download_button("Download daily performance report CSV", report.to_csv(index=False).encode("utf-8"), "daily_performance_report.csv", "text/csv")
+        available_days = sorted(completed["_day"].dropna().unique().tolist(), reverse=True)
+        if available_days:
+            selected_report_day = st.selectbox("Inspect completed trades for date", available_days, key="inspect_daily_trade_date")
+            day_trades = completed[completed["_day"] == selected_report_day].copy()
+            keep_cols = [c for c in ["Time", "Opened", "Market", "Symbol", "TF", "Side", "Entry", "Exit", "Stop", "TP1", "TP2", "Exit reason", "Status", "_pnl"] if c in day_trades.columns]
+            day_trades = day_trades[keep_cols].rename(columns={"_pnl": "Net P&L (price-units)"})
+            st.markdown(f"**Trade-by-trade result for {selected_report_day}**")
+            st.dataframe(day_trades, use_container_width=True, hide_index=True)
+
+    else:
+        st.info("No completed paper trades yet. Daily wins, losses, P&L and win rate will appear after positions close. Open positions are not counted as wins or losses.")
+else:
+    st.info("No paper-trade history yet. The daily report will populate as trades are recorded and completed.")
+
 st.divider()
 st.subheader(f"📊 Detailed chart and indicators: {market_name}")
-st.caption("The Market dropdown selects which market's detailed chart and indicator diagnostics to display. It does not limit automatic paper trading.")
+st.caption(f"Per-symbol auto-trading is {'ON' if st.session_state.symbol_trade_enabled.get(market_name, True) else 'OFF'} for {market_name}. Change it in the per-symbol switches above. The Market dropdown only selects the detailed chart.")
 
 with st.spinner("Downloading selected-market candles and evaluating the AI Brain..."):
     raw = download_data(cfg["symbol"], signal_tf)
@@ -1018,7 +1038,7 @@ else:
     st.warning(f"WAIT — no setup passed all filters. Best-side Signal strength: {score}/100. {ml_note}")
 
 st.subheader("Automatic paper trading")
-st.caption("Paper trading only. On this Streamlit Cloud deployment, scans run about every 60 seconds only while the app session is active. This is NOT a persistent background worker: cloud sleep or session disconnects can interrupt scans. True unattended operation requires a separately hosted worker (for example, on a VPS) and persistent storage.")
+st.caption(f"Paper trading only. The app refreshes analysis about every 60 seconds while this page stays open and connected. Last dashboard refresh: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}. Cloud sleep, browser disconnection, or provider delays can interrupt scans.")
 st.success("Automatic paper scanner: RUNNING")
 
 
@@ -1034,14 +1054,6 @@ def run_all_market_scan():
             scan_htf_raw = download_data(scan_cfg["symbol"], scan_cfg["htf"])
             if scan_raw.empty or len(scan_raw) < 60:
                 all_events.append(f"{scan_name}: skipped; insufficient market data.")
-                continue
-            session = market_session_status(scan_name, scan_cfg)
-            if session["Session status"] != "OPEN":
-                all_events.append(f"{scan_name}: no new entries; market session is {session['Session status']} ({session['Session detail']}).")
-                continue
-            fresh, freshness_note = candle_freshness_status(scan_raw, scan_tf)
-            if not fresh:
-                all_events.append(f"{scan_name}: entries blocked because data is stale/uncertain ({freshness_note}).")
                 continue
             scan_data = add_adaptive_levels(add_indicators(scan_raw), scan_tf)
             scan_htf = add_adaptive_levels(add_indicators(scan_htf_raw), scan_cfg["htf"]) if not scan_htf_raw.empty else pd.DataFrame()
