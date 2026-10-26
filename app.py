@@ -26,7 +26,7 @@ st.set_page_config(page_title="AI Paper Trading Brain", page_icon="🧠", layout
 # -----------------------------
 # Configuration / data helpers
 # -----------------------------
-STARTING_BALANCE = 100_000.0  # INR virtual balance
+STARTING_BALANCE = 100.0  # USD-denominated virtual starting balance
 MARKETS = {
     "Gold (XAUUSD)": {"symbol": "GC=F", "signal_tf": "5m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "30m", "kind": "gold"},
     "US Oil (WTI proxy)": {"symbol": "CL=F", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "30m", "kind": "oil"},
@@ -1014,6 +1014,7 @@ with st.sidebar:
     st.header("Bot settings")
     # Keep changes staged until the user explicitly confirms them.
     with st.form("bot_settings_form"):
+        starting_balance_setting = st.slider("Starting virtual balance (USD)", 10, 1000, int(st.session_state.get("starting_balance_applied", STARTING_BALANCE)), 10, key="settings_starting_balance")
         market_name = st.selectbox("Market", list(MARKETS.keys()), key="settings_market")
         cfg = MARKETS[market_name]
         allowed_tfs = cfg["allowed_tfs"]
@@ -1029,6 +1030,14 @@ with st.sidebar:
         rr2 = st.slider("TP2 risk/reward", 1.5, 2.5, 2.0, 0.1, key="settings_rr2")
         confirm_settings = st.form_submit_button("✅ Confirm settings", type="primary", use_container_width=True)
     if confirm_settings:
+        previous_starting_balance = float(st.session_state.get("starting_balance_applied", STARTING_BALANCE))
+        st.session_state.starting_balance_applied = float(starting_balance_setting)
+        if previous_starting_balance != float(starting_balance_setting) or "balance" not in st.session_state:
+            st.session_state.balance = float(starting_balance_setting)
+            st.session_state.daily_start = float(starting_balance_setting)
+            st.session_state.auto_daily_start_balance = float(starting_balance_setting)
+            # Open positions are tied to the old account size; close/reset them on capital change.
+            st.session_state.auto_open_positions = []
         st.session_state.settings_market_applied = market_name
         st.session_state.settings_signal_tf = signal_tf
         st.session_state.settings_htf_tf_applied = htf_tf
@@ -1040,12 +1049,14 @@ with st.sidebar:
         st.success("Settings confirmed for this session.")
     st.caption("The multi-strategy engine evaluates trend, mean reversion, breakout, momentum, range, volatility expansion, price action and a liquidity-sweep proxy. Entries are simulated paper trades only.")
 
+if "starting_balance_applied" not in st.session_state:
+    st.session_state.starting_balance_applied = float(STARTING_BALANCE)
 if "balance" not in st.session_state:
-    st.session_state.balance = STARTING_BALANCE
+    st.session_state.balance = float(st.session_state.starting_balance_applied)
 if "trades" not in st.session_state:
     st.session_state.trades = load_trade_log()
 if "daily_start" not in st.session_state:
-    st.session_state.daily_start = STARTING_BALANCE
+    st.session_state.daily_start = float(st.session_state.starting_balance_applied)
 if "daily_date" not in st.session_state:
     st.session_state.daily_date = datetime.now().date()
 if "halted" not in st.session_state:
@@ -1084,7 +1095,7 @@ if st.session_state.trade_day != today_key:
     st.session_state.halted = False
 
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("Virtual balance", f"₹{st.session_state.balance:,.2f}")
+col1.metric("Virtual balance (USD)", f"${st.session_state.balance:,.2f}")
 col2.metric("Paper trades today", f"{st.session_state.trades_today}/{max_trades_per_day}")
 col3.metric("Daily loss stop", f"{max_daily_loss:.1f}%")
 col4.metric("Risk per setup", f"{risk_pct:.2f}%")
@@ -1164,7 +1175,7 @@ if not trades_df.empty:
         d3.metric("Today's losses", today_losses)
         d4.metric("Today's win rate", f"{today_wr:.1f}%" if today_trades else "—")
         d5.metric("Today's net P&L", f"{today_pnl:,.3f}")
-        st.caption("P&L is shown in estimated price-units from this simulator, not guaranteed INR profit; instrument contract values and broker costs are not modeled accurately.")
+        st.caption("Trade P&L is an estimated price-unit proxy, not a broker-calibrated USD return. Contract sizes, conversions, spreads, commissions, swaps and funding are not fully modeled; do not interpret these figures as real-world dollar profit.")
         report_days = st.slider("Calendar report: past days", 7, 90, 30, 1, key="daily_report_days")
         cutoff_day = (date.today() - timedelta(days=report_days - 1)).isoformat()
         report = daily[daily["Date"] >= cutoff_day].sort_values("Date", ascending=False)
@@ -1433,7 +1444,7 @@ with st.expander("Backtest (historical, simplified)"):
     bt_period = st.selectbox("Backtest range (based on available Yahoo candles)", ["Current loaded history"], index=0)
     cost_bps = st.slider("Estimated round-trip costs (basis points of price × units)", 0.0, 20.0, 2.0, 0.5)
     if st.button("Run backtest"):
-        bt, final_balance, err = run_backtest(raw, htf, signal_tf, htf_tf, score_threshold, risk_pct, rr2, STARTING_BALANCE, max_daily_loss, cost_bps)
+        bt, final_balance, err = run_backtest(raw, htf, signal_tf, htf_tf, score_threshold, risk_pct, rr2, float(st.session_state.starting_balance_applied), max_daily_loss, cost_bps)
         diagnostics = diagnose_backtest_filters(raw, htf, signal_tf, htf_tf, score_threshold, max_daily_loss)
         st.subheader("Backtest diagnostics")
         st.caption("Counts explain why bars were skipped or rejected. They are diagnostic counts, not independent trades, and do not change the strategy rules.")
@@ -1452,7 +1463,7 @@ with st.expander("Backtest (historical, simplified)"):
             x1.metric("Trades", len(bt))
             x2.metric("Win rate", f"{win_rate:.1f}%")
             x3.metric("Profit factor", f"{pf:.2f}" if np.isfinite(pf) else "∞")
-            x4.metric("Final model balance", f"₹{final_balance:,.2f}")
+            x4.metric("Final simulated balance (USD proxy)", f"${final_balance:,.2f}")
             equity = bt["Balance"]
             peak = equity.cummax()
             drawdown = ((peak - equity) / peak.replace(0, np.nan) * 100).max() if len(equity) else 0.0

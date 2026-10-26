@@ -1,0 +1,17 @@
+AI BRAIN — COMBINED WORKING PACKAGE
+
+Contents
+- app.py: original adaptive strategy selection Streamlit app, preserved unchanged.
+- trading_engine/: separate research-first paper-trading framework and tests.
+
+Important status
+This is a combined package, not yet a fully integrated engine. The original app remains unchanged. The research framework has passing initial unit tests, but its full walk-forward model-training/backtest and end-to-end paper execution orchestration still require implementation and validation. Do not treat results as proof of profitability. Paper trading only; no broker/wallet integration.
+
+Run original app
+  pip install -r requirements.txt
+  streamlit run app.py
+
+Run framework tests from the package root
+  pytest trading_engine/tests -q
+
+Read trading_engine/README.md for framework limitations and worker/viewer commands.

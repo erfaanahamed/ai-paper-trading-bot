@@ -19,7 +19,7 @@ Run locally:
 Important limitations:
 - Paper trading only. No broker, exchange, wallet, private key, or real-money order connection is included.
 - The bot uses Yahoo Finance as a market-data source. Intraday data may be delayed, stale, incomplete, or unavailable; the app cannot guarantee true real-time broker quotes.
-- The displayed P&L is an approximate simulator estimate in price-units, not reliable INR P&L. Broker contract sizes, pip/tick values, commissions, spread, swaps/funding and slippage are not fully modeled.
+- The starting virtual account balance can be selected from $10 to $1,000 in the sidebar. The displayed P&L is an approximate simulator estimate in price-units, not broker-calibrated USD P&L. Broker contract sizes, pip/tick values, commissions, spread, swaps/funding and slippage are not fully modeled.
 - The self-learning model is a simple baseline and requires enough completed feature-rich paper trades before training. Win rates and predicted probabilities are not guarantees.
 - Automatic scanning stops when the app/browser session sleeps, disconnects, or the hosting service suspends the app. This is not a persistent background worker.
 - Test carefully and inspect data freshness, position management, and out-of-sample results before considering any real-money deployment.
