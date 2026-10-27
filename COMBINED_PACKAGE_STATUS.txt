@@ -8,3 +8,5 @@ Symbols are Yahoo Finance proxies, not broker quotes. Gold uses GC=F, Silver use
 
 
 V2 UPDATE (2026-10-27): News Protection UI + user-uploaded UTC economic calendar, fail-closed entry blocking when enabled without a valid calendar, and bounded strategy discovery research lab added. Calendar is not live/automatic. Strategy discovery does not automatically promote candidates. Paper trading only.
+
+V3 UPDATE: automatic high-impact calendar fetch added via ShowMyTrades public API; refreshes every 15 minutes; optional CSV fallback retained; fail-closed when no usable calendar is available.

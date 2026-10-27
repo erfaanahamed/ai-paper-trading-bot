@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 from streamlit_autorefresh import st_autorefresh
 import json
 from pathlib import Path
+import requests
 
 
 # -----------------------------
@@ -18,15 +19,77 @@ NEWS_DATA_DIR = Path("trading_engine_data")
 NEWS_CALENDAR_PATH = NEWS_DATA_DIR / "economic_calendar.csv"
 NEWS_CALENDAR_COLUMNS = ["datetime_utc", "currency", "impact", "event"]
 
+def _fetch_automatic_news_calendar():
+    """Fetch high-impact ('red folder') events from a public economic-calendar API."""
+    cache_key = "auto_news_calendar_cache"
+    cache_time_key = "auto_news_calendar_cache_time"
+    status_key = "auto_news_calendar_status"
+    now = datetime.now(timezone.utc)
+    cached_at = st.session_state.get(cache_time_key)
+    cached = st.session_state.get(cache_key)
+    # Refresh every 15 minutes; reuse last successful result between refreshes.
+    if cached is not None and cached_at and (now - cached_at).total_seconds() < 900:
+        return cached.copy(), st.session_state.get(status_key, "Automatic calendar cached.")
+    url = "https://showmytrades.com/api/public/calendar/v1"
+    try:
+        response = requests.get(
+            url,
+            params={"impact": "high", "days": 7, "format": "json"},
+            headers={"User-Agent": "AIBrainPaperTrader/3.0"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        events = payload.get("events", [])
+        rows = []
+        for item in events:
+            event_time = item.get("time")
+            if not event_time and item.get("ts"):
+                event_time = pd.to_datetime(item["ts"], unit="s", utc=True).isoformat()
+            if not event_time:
+                continue
+            rows.append({
+                "datetime_utc": event_time,
+                "currency": str(item.get("currency", "")).upper(),
+                "impact": "High",
+                "event": str(item.get("title", "Economic event")),
+                "source": "ShowMyTrades automatic calendar",
+                "status": str(item.get("status", "scheduled")),
+                "confidence": str(item.get("confidence", "unknown")),
+            })
+        frame = pd.DataFrame(rows)
+        if frame.empty:
+            raise ValueError("API returned no parseable high-impact events")
+        frame["datetime_utc"] = pd.to_datetime(frame["datetime_utc"], utc=True, errors="coerce")
+        frame = frame.dropna(subset=["datetime_utc"])
+        frame = frame[frame["currency"].isin(["USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF", "CNY"])]
+        frame = frame.sort_values("datetime_utc").reset_index(drop=True)
+        if frame.empty:
+            raise ValueError("API returned no valid events")
+        st.session_state[cache_key] = frame.copy()
+        st.session_state[cache_time_key] = now
+        st.session_state[status_key] = f"Automatic calendar connected · refreshed {now.strftime('%H:%M:%S UTC')}"
+        return frame, st.session_state[status_key]
+    except Exception as exc:
+        # Use recent successful cache if available; otherwise return an explicit failure.
+        if cached is not None and not cached.empty:
+            msg = f"Calendar API refresh failed; using last successful cache. Error: {str(exc)[:100]}"
+            st.session_state[status_key] = msg
+            return cached.copy(), msg
+        return pd.DataFrame(columns=NEWS_CALENDAR_COLUMNS), f"Automatic calendar unavailable: {str(exc)[:140]}"
+
 def load_news_calendar():
-    """Load a user-supplied UTC economic calendar. No live feed is implied."""
+    """Prefer automatic high-impact news; use uploaded CSV only as fallback."""
+    auto_frame, auto_status = _fetch_automatic_news_calendar()
+    if not auto_frame.empty:
+        return auto_frame, auto_status
     try:
         if not NEWS_CALENDAR_PATH.exists():
-            return pd.DataFrame(columns=NEWS_CALENDAR_COLUMNS), "Calendar file not uploaded."
+            return pd.DataFrame(columns=NEWS_CALENDAR_COLUMNS), auto_status
         frame = pd.read_csv(NEWS_CALENDAR_PATH)
         missing = [c for c in NEWS_CALENDAR_COLUMNS if c not in frame.columns]
         if missing:
-            return pd.DataFrame(columns=NEWS_CALENDAR_COLUMNS), "Calendar missing columns: " + ", ".join(missing)
+            return pd.DataFrame(columns=NEWS_CALENDAR_COLUMNS), auto_status + f"; uploaded CSV missing: {', '.join(missing)}"
         frame = frame[NEWS_CALENDAR_COLUMNS].copy()
         frame["datetime_utc"] = pd.to_datetime(frame["datetime_utc"], utc=True, errors="coerce")
         frame["currency"] = frame["currency"].astype(str).str.upper().str.strip()
@@ -34,9 +97,9 @@ def load_news_calendar():
         frame["event"] = frame["event"].astype(str).str.strip()
         frame = frame.dropna(subset=["datetime_utc"])
         frame = frame[frame["impact"].isin(["High", "High Impact", "3", "Red"])]
-        return frame.sort_values("datetime_utc"), ("ok" if not frame.empty else "No valid high-impact events in calendar.")
+        return frame.sort_values("datetime_utc"), "Automatic feed unavailable; using uploaded calendar CSV."
     except Exception as exc:
-        return pd.DataFrame(columns=NEWS_CALENDAR_COLUMNS), f"Calendar read error: {str(exc)[:120]}"
+        return pd.DataFrame(columns=NEWS_CALENDAR_COLUMNS), f"{auto_status}; CSV error: {str(exc)[:100]}"
 
 def relevant_news_currencies(market_name):
     """Currencies most relevant to the selected instrument; this is an approximation."""
@@ -1129,9 +1192,10 @@ with st.sidebar:
               help="When ON, high-impact calendar windows block new paper entries. Existing positions are still managed.")
     st.slider("Block before news (minutes)", 0, 180, int(st.session_state.get("news_pre_minutes", 30)), 5, key="news_pre_minutes")
     st.slider("Block after news (minutes)", 0, 180, int(st.session_state.get("news_post_minutes", 30)), 5, key="news_post_minutes")
+    st.caption("The bot automatically fetches high-impact (red-folder) scheduled events and refreshes the feed every 15 minutes. A user-uploaded CSV is only a fallback if the automatic feed is unavailable.")
     uploaded_calendar = st.file_uploader(
-        "Upload economic calendar CSV (UTC)", type=["csv"], key="news_calendar_upload",
-        help="Required columns: datetime_utc, currency, impact, event. Example impact values: High, High Impact, 3, Red."
+        "Optional fallback: upload economic calendar CSV (UTC)", type=["csv"], key="news_calendar_upload",
+        help="Fallback columns: datetime_utc, currency, impact, event. Automatic feed is preferred when available."
     )
     if uploaded_calendar is not None:
         try:
@@ -1147,13 +1211,14 @@ with st.sidebar:
             st.error(f"Could not save calendar: {str(_exc)[:120]}")
     _cal_df, _cal_status = load_news_calendar()
     if st.session_state.get("news_protection_enabled", True):
-        if _cal_status == "ok":
-            st.success(f"Protection enabled · {_cal_df.shape[0]} high-impact calendar rows loaded.")
+        if not _cal_df.empty:
+            st.success(f"Protection enabled · {_cal_df.shape[0]} high-impact events loaded. {_cal_status}")
+            _show_cols = [c for c in ["datetime_utc", "currency", "impact", "event", "status", "confidence"] if c in _cal_df.columns]
+            st.dataframe(_cal_df[_show_cols].head(20), use_container_width=True, hide_index=True)
         else:
-            st.error("Protection is enabled but no valid calendar is loaded. New entries will be blocked.")
+            st.error(f"Protection is enabled but no valid calendar is available. New entries will be blocked. {_cal_status}")
     else:
         st.warning("Protection disabled. The bot will not block entries around scheduled news.")
-    st.caption("This version uses a user-uploaded calendar; it does NOT fetch live economic news automatically. Keep the calendar current.")
 
 if "starting_balance_applied" not in st.session_state:
     st.session_state.starting_balance_applied = float(STARTING_BALANCE)

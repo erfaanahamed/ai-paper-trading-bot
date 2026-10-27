@@ -47,3 +47,11 @@ V2 ADVANCED RESEARCH + NEWS PROTECTION:
 - Added a bounded Strategy Discovery Lab that compares five candidate strategy families on a chronological validation segment after approximate costs. It reports research metrics only and does not automatically promote a candidate. Promotion requires separate walk-forward and paper validation.
 - Added `trading_engine/news_protection.py`, `trading_engine/strategy_discovery.py`, and tests.
 - Still research/paper trading only. Yahoo Finance data may be delayed, and the main Streamlit app is not a guaranteed always-on background service. Cloud hosting must be tested separately.
+
+
+V3 AUTOMATIC NEWS CALENDAR:
+- News Protection now automatically fetches scheduled high-impact ("red-folder") economic events from ShowMyTrades' public economic calendar API.
+- API documentation: https://showmytrades.com/docs/api/economic-calendar
+- Refresh interval is 15 minutes, cached in the Streamlit session. The automatic feed is preferred; optional uploaded CSV is fallback only.
+- If the feed is unavailable and no recent cache/valid fallback exists, News Protection ON blocks new entries (fail-closed). It continues managing existing paper positions.
+- API coverage is the provider's supported currencies (USD, EUR, GBP, JPY, AUD, NZD, CAD, CHF, CNY); event schedules can be revised and feeds can fail. This is scheduled economic-news protection, not a guarantee against all news or unscheduled headlines.
