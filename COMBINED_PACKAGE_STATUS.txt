@@ -5,3 +5,6 @@ This version connects causal OHLCV indicators, the rule-based strategy ensemble,
 Paper/research only. A scan may remain WAIT/SKIP while data is stale, indicators are warming up, there is insufficient training data, the model fails its validation threshold, or the estimated net expected value is not positive. A loaded model is not automatically retrained on every scan; model refresh and completed-trade feedback orchestration remain future work.
 
 Symbols are Yahoo Finance proxies, not broker quotes. Gold uses GC=F, Silver uses SI=F, and WTI crude uses CL=F. No broker orders, wallet connection, or live trading is included. There is no guarantee of profitability.
+
+
+V2 UPDATE (2026-10-27): News Protection UI + user-uploaded UTC economic calendar, fail-closed entry blocking when enabled without a valid calendar, and bounded strategy discovery research lab added. Calendar is not live/automatic. Strategy discovery does not automatically promote candidates. Paper trading only.

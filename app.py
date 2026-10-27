@@ -10,6 +10,71 @@ from streamlit_autorefresh import st_autorefresh
 import json
 from pathlib import Path
 
+
+# -----------------------------
+# News protection (calendar CSV)
+# -----------------------------
+NEWS_DATA_DIR = Path("trading_engine_data")
+NEWS_CALENDAR_PATH = NEWS_DATA_DIR / "economic_calendar.csv"
+NEWS_CALENDAR_COLUMNS = ["datetime_utc", "currency", "impact", "event"]
+
+def load_news_calendar():
+    """Load a user-supplied UTC economic calendar. No live feed is implied."""
+    try:
+        if not NEWS_CALENDAR_PATH.exists():
+            return pd.DataFrame(columns=NEWS_CALENDAR_COLUMNS), "Calendar file not uploaded."
+        frame = pd.read_csv(NEWS_CALENDAR_PATH)
+        missing = [c for c in NEWS_CALENDAR_COLUMNS if c not in frame.columns]
+        if missing:
+            return pd.DataFrame(columns=NEWS_CALENDAR_COLUMNS), "Calendar missing columns: " + ", ".join(missing)
+        frame = frame[NEWS_CALENDAR_COLUMNS].copy()
+        frame["datetime_utc"] = pd.to_datetime(frame["datetime_utc"], utc=True, errors="coerce")
+        frame["currency"] = frame["currency"].astype(str).str.upper().str.strip()
+        frame["impact"] = frame["impact"].astype(str).str.title().str.strip()
+        frame["event"] = frame["event"].astype(str).str.strip()
+        frame = frame.dropna(subset=["datetime_utc"])
+        frame = frame[frame["impact"].isin(["High", "High Impact", "3", "Red"])]
+        return frame.sort_values("datetime_utc"), ("ok" if not frame.empty else "No valid high-impact events in calendar.")
+    except Exception as exc:
+        return pd.DataFrame(columns=NEWS_CALENDAR_COLUMNS), f"Calendar read error: {str(exc)[:120]}"
+
+def relevant_news_currencies(market_name):
+    """Currencies most relevant to the selected instrument; this is an approximation."""
+    name = str(market_name).upper()
+    if "EUR/USD" in name: return {"EUR", "USD"}
+    if "GBP/USD" in name: return {"GBP", "USD"}
+    if "AUD/USD" in name: return {"AUD", "USD"}
+    if "USD/JPY" in name: return {"USD", "JPY"}
+    if any(x in name for x in ["GOLD", "XAU", "SILVER", "XAG", "CRUDE", "OIL", "BTC", "ETH", "SOL"]):
+        return {"USD"}
+    return {"USD"}
+
+def news_protection_status(market_name, now_utc=None):
+    """Return (blocked, reason, next_event); fail closed when protection is ON but calendar is missing."""
+    enabled = bool(st.session_state.get("news_protection_enabled", True))
+    if not enabled:
+        return False, "News protection OFF", None
+    calendar, status = load_news_calendar()
+    if status != "ok" or calendar.empty:
+        return True, "News protection ON but no valid calendar is loaded; new entries blocked for safety.", None
+    now_utc = now_utc or datetime.now(timezone.utc)
+    pre_mins = int(st.session_state.get("news_pre_minutes", 30))
+    post_mins = int(st.session_state.get("news_post_minutes", 30))
+    relevant = relevant_news_currencies(market_name)
+    upcoming = calendar[
+        calendar["currency"].isin(relevant)
+        & (calendar["datetime_utc"] >= pd.Timestamp(now_utc) - pd.Timedelta(minutes=post_mins))
+        & (calendar["datetime_utc"] <= pd.Timestamp(now_utc) + pd.Timedelta(minutes=pre_mins))
+    ]
+    if not upcoming.empty:
+        event = upcoming.iloc[0]
+        when = event["datetime_utc"].strftime("%Y-%m-%d %H:%M UTC")
+        label = f"{event['currency']} {event['event']} ({when})"
+        return True, f"High-impact news window: {label}", label
+    future = calendar[(calendar["currency"].isin(relevant)) & (calendar["datetime_utc"] > pd.Timestamp(now_utc))]
+    next_event = None if future.empty else f"{future.iloc[0]['currency']} {future.iloc[0]['event']} — {future.iloc[0]['datetime_utc'].strftime('%Y-%m-%d %H:%M UTC')}"
+    return False, "No matching high-impact event inside the configured protection window.", next_event
+
 # Optional ML dependencies: the rule-based bot still runs if scikit-learn is unavailable.
 try:
     from sklearn.impute import SimpleImputer
@@ -775,6 +840,13 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
         st.session_state.auto_last_processed = processed
         return balance, trades_today, daily_start_balance, open_positions, events, "Symbol trading is OFF."
 
+    news_blocked, news_reason, news_next = news_protection_status(market_name)
+    if news_blocked:
+        events.append(f"{market_name}: NEWS PROTECTION BLOCK — {news_reason}")
+        processed[market_key] = bar_time
+        st.session_state.auto_last_processed = processed
+        return balance, trades_today, daily_start_balance, open_positions, events, "News protection blocked new entry."
+
     if already_processed:
         processed[market_key] = bar_time
         st.session_state.auto_last_processed = processed
@@ -1050,6 +1122,39 @@ with st.sidebar:
         st.success("Settings confirmed for this session.")
     st.caption("The multi-strategy engine evaluates trend, mean reversion, breakout, momentum, range, volatility expansion, price action and a liquidity-sweep proxy. Entries are simulated paper trades only.")
 
+    st.divider()
+    st.subheader("📰 News Protection")
+    st.toggle("News Protection ON/OFF", value=st.session_state.get("news_protection_enabled", True),
+              key="news_protection_enabled",
+              help="When ON, high-impact calendar windows block new paper entries. Existing positions are still managed.")
+    st.slider("Block before news (minutes)", 0, 180, int(st.session_state.get("news_pre_minutes", 30)), 5, key="news_pre_minutes")
+    st.slider("Block after news (minutes)", 0, 180, int(st.session_state.get("news_post_minutes", 30)), 5, key="news_post_minutes")
+    uploaded_calendar = st.file_uploader(
+        "Upload economic calendar CSV (UTC)", type=["csv"], key="news_calendar_upload",
+        help="Required columns: datetime_utc, currency, impact, event. Example impact values: High, High Impact, 3, Red."
+    )
+    if uploaded_calendar is not None:
+        try:
+            _cal = pd.read_csv(uploaded_calendar)
+            _required = ["datetime_utc", "currency", "impact", "event"]
+            if not all(c in _cal.columns for c in _required):
+                st.error("CSV must contain: datetime_utc, currency, impact, event.")
+            else:
+                NEWS_DATA_DIR.mkdir(parents=True, exist_ok=True)
+                _cal[_required].to_csv(NEWS_CALENDAR_PATH, index=False)
+                st.success(f"Calendar saved ({len(_cal)} rows).")
+        except Exception as _exc:
+            st.error(f"Could not save calendar: {str(_exc)[:120]}")
+    _cal_df, _cal_status = load_news_calendar()
+    if st.session_state.get("news_protection_enabled", True):
+        if _cal_status == "ok":
+            st.success(f"Protection enabled · {_cal_df.shape[0]} high-impact calendar rows loaded.")
+        else:
+            st.error("Protection is enabled but no valid calendar is loaded. New entries will be blocked.")
+    else:
+        st.warning("Protection disabled. The bot will not block entries around scheduled news.")
+    st.caption("This version uses a user-uploaded calendar; it does NOT fetch live economic news automatically. Keep the calendar current.")
+
 if "starting_balance_applied" not in st.session_state:
     st.session_state.starting_balance_applied = float(STARTING_BALANCE)
 if "balance" not in st.session_state:
@@ -1116,6 +1221,11 @@ st.markdown("**Global forex sessions**")
 st.dataframe(current_global_sessions(now_utc), use_container_width=True, hide_index=True)
 
 st.subheader("🌐 All-market live signal dashboard")
+news_on = bool(st.session_state.get("news_protection_enabled", True))
+if news_on:
+    st.info("News Protection is ON. New paper entries are blocked unless a valid calendar is loaded and the market is outside its high-impact event window.")
+else:
+    st.warning("News Protection is OFF. Scheduled-news entry blocking is disabled.")
 st.caption("Refreshes about every 60 seconds while this page stays open and connected. Yahoo Finance is an indicative data source, not guaranteed real-time broker data.")
 with st.spinner("Analyzing all configured markets..."):
     overview = scan_all_market_signals()
@@ -1389,6 +1499,21 @@ with st.expander("AI Brain — condition-by-condition explanation", expanded=Tru
     st.write("Directional signals use trend, momentum, DI, VWAP, Bollinger Bands and higher-timeframe alignment. Stop-loss and target levels are validated so BUY targets are above entry and SELL targets are below entry.")
     for name, passed in checks.items():
         st.write(("✅ " if passed else "⬜ ") + name)
+
+with st.expander("🧪 Advanced Strategy Discovery Lab", expanded=False):
+    st.write("Research-only candidate testing. It compares a small, explicit strategy library on chronological train/validation segments; it does not guarantee profitability and does not silently replace the running strategy.")
+    st.caption("Candidates are assessed after estimated round-trip costs. A candidate is only research-eligible when it has enough validation trades and positive validation expectancy. Final adoption still requires longer walk-forward and paper-trading validation.")
+    if st.button("Run strategy discovery on selected market", key="run_strategy_discovery"):
+        try:
+            from trading_engine.strategy_discovery import discover_strategies
+            _disc = discover_strategies(data, cost_bps=2.0, min_validation_trades=8)
+            if _disc.empty:
+                st.warning("No candidate met the minimum validation sample. Collect more history or try another timeframe.")
+            else:
+                st.dataframe(_disc, use_container_width=True, hide_index=True)
+                st.info("Research results only: candidates are not automatically promoted to the active strategy by this screen.")
+        except Exception as _exc:
+            st.error(f"Strategy discovery failed safely: {str(_exc)[:160]}")
 
 st.subheader("Candlestick chart — indicators")
 chart_df = data.tail(180).copy()

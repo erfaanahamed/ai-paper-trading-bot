@@ -36,3 +36,14 @@ Adaptive strategy-selection update:
 - Completed auto-paper trades record the aligned strategy names and regime. When at least five recorded outcomes exist for a strategy in that exact market/timeframe, recent outcomes influence its ranking; otherwise the selector uses conservative regime-based priors and labels itself as warming up.
 - At least two selected strategy votes must agree before a BUY/SELL signal can pass to the existing ML gate and paper risk checks. The scanner shows selected strategies and whether selection is still warming up or using performance history.
 - The previous backtest is still not an adaptive-strategy walk-forward backtest. It must not be used as proof that this new selector is profitable. News/calendar integration is not included, so no active news trading or automatic news protection is claimed.
+
+
+V2 ADVANCED RESEARCH + NEWS PROTECTION:
+- Added a News Protection ON/OFF control to the Streamlit sidebar.
+- News protection uses a user-uploaded economic-calendar CSV with columns:
+  datetime_utc,currency,impact,event. datetime_utc must be UTC; only High/High Impact/3/Red events are considered.
+- With News Protection ON and no valid calendar loaded, new automatic paper entries are blocked (fail-closed). Existing paper positions continue to be managed. This is intentional so a missing feed is not mistaken for protection.
+- This package does NOT fetch live news/calendar data automatically. Upload and keep the calendar current. If the calendar is stale or incomplete, protection can miss events.
+- Added a bounded Strategy Discovery Lab that compares five candidate strategy families on a chronological validation segment after approximate costs. It reports research metrics only and does not automatically promote a candidate. Promotion requires separate walk-forward and paper validation.
+- Added `trading_engine/news_protection.py`, `trading_engine/strategy_discovery.py`, and tests.
+- Still research/paper trading only. Yahoo Finance data may be delayed, and the main Streamlit app is not a guaranteed always-on background service. Cloud hosting must be tested separately.
