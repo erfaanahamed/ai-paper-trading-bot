@@ -10,7 +10,18 @@ from streamlit_autorefresh import st_autorefresh
 import json
 from pathlib import Path
 import requests
-from trading_engine.smc import add_smc_features, smc_signal
+# SMC import with a root-level compatibility fallback. This keeps the app from
+# crashing if a deployment accidentally omits trading_engine/smc.py while the
+# standalone smc.py file is present. The full package remains the preferred source.
+try:
+    from trading_engine.smc import add_smc_features, smc_signal
+except ModuleNotFoundError as _smc_import_error:
+    try:
+        from smc import add_smc_features, smc_signal
+    except ModuleNotFoundError:
+        raise ModuleNotFoundError(
+            "SMC module is missing. Ensure both trading_engine/smc.py and the project files are uploaded at the repository root."
+        ) from _smc_import_error
 
 
 # -----------------------------
