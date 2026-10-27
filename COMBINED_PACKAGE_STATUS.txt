@@ -9,4 +9,7 @@ Symbols are Yahoo Finance proxies, not broker quotes. Gold uses GC=F, Silver use
 
 V2 UPDATE (2026-10-27): News Protection UI + user-uploaded UTC economic calendar, fail-closed entry blocking when enabled without a valid calendar, and bounded strategy discovery research lab added. Calendar is not live/automatic. Strategy discovery does not automatically promote candidates. Paper trading only.
 
-V3 UPDATE: automatic high-impact calendar fetch added via ShowMyTrades public API; refreshes every 15 minutes; optional CSV fallback retained; fail-closed when no usable calendar is available.
+V3 UPDATE: automatic high-impact calendar fetch was initially added. V5 replaces it with Forex Factory/Fair Economy published weekly feed only, red-folder filtering only, 15-minute refresh, no CSV or alternate-provider fallback, and fail-closed behavior when no valid feed/cache is available.
+
+
+NEWS SOURCE UPDATE (V5): News Protection uses only Forex Factory/Fair Economy published weekly JSON feed at https://nfs.faireconomy.media/ff_calendar_thisweek.json. Only impact="High" (red-folder) events are accepted. No ShowMyTrades, third-party calendar, or uploaded CSV fallback is used. Feed refresh interval: 15 minutes. The published feed covers the current week; a successful cached result is used if refresh fails. If no valid feed/cache exists, News Protection blocks new entries. Forex Factory notices prohibit copying/redistribution of calendar data without written consent; this bot uses the public feed for local paper-trading protection and does not republish it.

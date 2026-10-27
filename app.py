@@ -20,86 +20,71 @@ NEWS_CALENDAR_PATH = NEWS_DATA_DIR / "economic_calendar.csv"
 NEWS_CALENDAR_COLUMNS = ["datetime_utc", "currency", "impact", "event"]
 
 def _fetch_automatic_news_calendar():
-    """Fetch high-impact ('red folder') events from a public economic-calendar API."""
+    """Fetch only Forex Factory's published weekly calendar and keep red-folder events."""
     cache_key = "auto_news_calendar_cache"
     cache_time_key = "auto_news_calendar_cache_time"
     status_key = "auto_news_calendar_status"
     now = datetime.now(timezone.utc)
     cached_at = st.session_state.get(cache_time_key)
     cached = st.session_state.get(cache_key)
-    # Refresh every 15 minutes; reuse last successful result between refreshes.
+    # Refresh every 15 minutes; reuse the last successful feed between refreshes.
     if cached is not None and cached_at and (now - cached_at).total_seconds() < 900:
-        return cached.copy(), st.session_state.get(status_key, "Automatic calendar cached.")
-    url = "https://showmytrades.com/api/public/calendar/v1"
+        return cached.copy(), st.session_state.get(status_key, "Forex Factory calendar cached.")
+
+    # Forex Factory/Fair Economy published weekly calendar feed. This is not a third-party calendar.
+    url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
     try:
         response = requests.get(
             url,
-            params={"impact": "high", "days": 7, "format": "json"},
-            headers={"User-Agent": "AIBrainPaperTrader/3.0"},
-            timeout=10,
+            headers={"User-Agent": "AIBrainPaperTrader/5.0"},
+            timeout=12,
         )
         response.raise_for_status()
         payload = response.json()
-        events = payload.get("events", [])
+        if not isinstance(payload, list):
+            raise ValueError("Forex Factory feed returned an unexpected format")
         rows = []
-        for item in events:
-            event_time = item.get("time")
-            if not event_time and item.get("ts"):
-                event_time = pd.to_datetime(item["ts"], unit="s", utc=True).isoformat()
+        for item in payload:
+            # Strictly accept High impact only (Forex Factory red folder). No medium/low/holiday events.
+            if str(item.get("impact", "")).strip().lower() != "high":
+                continue
+            event_time = item.get("date")
             if not event_time:
                 continue
+            parsed_time = pd.to_datetime(event_time, utc=True, errors="coerce")
+            if pd.isna(parsed_time):
+                continue
+            currency = str(item.get("country", "")).strip().upper()
+            if currency not in ["USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF", "CNY"]:
+                continue
             rows.append({
-                "datetime_utc": event_time,
-                "currency": str(item.get("currency", "")).upper(),
+                "datetime_utc": parsed_time,
+                "currency": currency,
                 "impact": "High",
                 "event": str(item.get("title", "Economic event")),
-                "source": "ShowMyTrades automatic calendar",
-                "status": str(item.get("status", "scheduled")),
-                "confidence": str(item.get("confidence", "unknown")),
+                "source": "Forex Factory weekly calendar feed",
             })
-        frame = pd.DataFrame(rows)
+        frame = pd.DataFrame(rows, columns=NEWS_CALENDAR_COLUMNS + ["source"])
         if frame.empty:
-            raise ValueError("API returned no parseable high-impact events")
+            raise ValueError("Forex Factory feed returned no parseable red-folder events")
         frame["datetime_utc"] = pd.to_datetime(frame["datetime_utc"], utc=True, errors="coerce")
-        frame = frame.dropna(subset=["datetime_utc"])
-        frame = frame[frame["currency"].isin(["USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF", "CNY"])]
-        frame = frame.sort_values("datetime_utc").reset_index(drop=True)
-        if frame.empty:
-            raise ValueError("API returned no valid events")
+        frame = frame.dropna(subset=["datetime_utc"]).sort_values("datetime_utc").reset_index(drop=True)
         st.session_state[cache_key] = frame.copy()
         st.session_state[cache_time_key] = now
-        st.session_state[status_key] = f"Automatic calendar connected · refreshed {now.strftime('%H:%M:%S UTC')}"
-        return frame, st.session_state[status_key]
+        status = f"Forex Factory connected · red-folder events only · refreshed {now.strftime('%H:%M:%S UTC')}"
+        st.session_state[status_key] = status
+        return frame, status
     except Exception as exc:
-        # Use recent successful cache if available; otherwise return an explicit failure.
+        # Fail closed if there is no successful cached Forex Factory response.
         if cached is not None and not cached.empty:
-            msg = f"Calendar API refresh failed; using last successful cache. Error: {str(exc)[:100]}"
+            msg = f"Forex Factory refresh failed; using last successful Forex Factory cache. Error: {str(exc)[:100]}"
             st.session_state[status_key] = msg
             return cached.copy(), msg
-        return pd.DataFrame(columns=NEWS_CALENDAR_COLUMNS), f"Automatic calendar unavailable: {str(exc)[:140]}"
+        return pd.DataFrame(columns=NEWS_CALENDAR_COLUMNS), f"Forex Factory automatic feed unavailable: {str(exc)[:140]}"
 
 def load_news_calendar():
-    """Prefer automatic high-impact news; use uploaded CSV only as fallback."""
-    auto_frame, auto_status = _fetch_automatic_news_calendar()
-    if not auto_frame.empty:
-        return auto_frame, auto_status
-    try:
-        if not NEWS_CALENDAR_PATH.exists():
-            return pd.DataFrame(columns=NEWS_CALENDAR_COLUMNS), auto_status
-        frame = pd.read_csv(NEWS_CALENDAR_PATH)
-        missing = [c for c in NEWS_CALENDAR_COLUMNS if c not in frame.columns]
-        if missing:
-            return pd.DataFrame(columns=NEWS_CALENDAR_COLUMNS), auto_status + f"; uploaded CSV missing: {', '.join(missing)}"
-        frame = frame[NEWS_CALENDAR_COLUMNS].copy()
-        frame["datetime_utc"] = pd.to_datetime(frame["datetime_utc"], utc=True, errors="coerce")
-        frame["currency"] = frame["currency"].astype(str).str.upper().str.strip()
-        frame["impact"] = frame["impact"].astype(str).str.title().str.strip()
-        frame["event"] = frame["event"].astype(str).str.strip()
-        frame = frame.dropna(subset=["datetime_utc"])
-        frame = frame[frame["impact"].isin(["High", "High Impact", "3", "Red"])]
-        return frame.sort_values("datetime_utc"), "Automatic feed unavailable; using uploaded calendar CSV."
-    except Exception as exc:
-        return pd.DataFrame(columns=NEWS_CALENDAR_COLUMNS), f"{auto_status}; CSV error: {str(exc)[:100]}"
+    """Use only Forex Factory's automatic weekly feed; never substitute another provider or CSV."""
+    return _fetch_automatic_news_calendar()
 
 def relevant_news_currencies(market_name):
     """Currencies most relevant to the selected instrument; this is an approximation."""
@@ -118,7 +103,7 @@ def news_protection_status(market_name, now_utc=None):
     if not enabled:
         return False, "News protection OFF", None
     calendar, status = load_news_calendar()
-    if status != "ok" or calendar.empty:
+    if calendar.empty:
         return True, "News protection ON but no valid calendar is loaded; new entries blocked for safety.", None
     now_utc = now_utc or datetime.now(timezone.utc)
     pre_mins = int(st.session_state.get("news_pre_minutes", 30))
@@ -1186,33 +1171,17 @@ with st.sidebar:
     st.caption("The multi-strategy engine evaluates trend, mean reversion, breakout, momentum, range, volatility expansion, price action and a liquidity-sweep proxy. Entries are simulated paper trades only.")
 
     st.divider()
-    st.subheader("📰 News Protection")
+    st.subheader("📰 Forex Factory Red-Folder News Protection")
     st.toggle("News Protection ON/OFF", value=st.session_state.get("news_protection_enabled", True),
               key="news_protection_enabled",
               help="When ON, high-impact calendar windows block new paper entries. Existing positions are still managed.")
     st.slider("Block before news (minutes)", 0, 180, int(st.session_state.get("news_pre_minutes", 30)), 5, key="news_pre_minutes")
     st.slider("Block after news (minutes)", 0, 180, int(st.session_state.get("news_post_minutes", 30)), 5, key="news_post_minutes")
-    st.caption("The bot automatically fetches high-impact (red-folder) scheduled events and refreshes the feed every 15 minutes. A user-uploaded CSV is only a fallback if the automatic feed is unavailable.")
-    uploaded_calendar = st.file_uploader(
-        "Optional fallback: upload economic calendar CSV (UTC)", type=["csv"], key="news_calendar_upload",
-        help="Fallback columns: datetime_utc, currency, impact, event. Automatic feed is preferred when available."
-    )
-    if uploaded_calendar is not None:
-        try:
-            _cal = pd.read_csv(uploaded_calendar)
-            _required = ["datetime_utc", "currency", "impact", "event"]
-            if not all(c in _cal.columns for c in _required):
-                st.error("CSV must contain: datetime_utc, currency, impact, event.")
-            else:
-                NEWS_DATA_DIR.mkdir(parents=True, exist_ok=True)
-                _cal[_required].to_csv(NEWS_CALENDAR_PATH, index=False)
-                st.success(f"Calendar saved ({len(_cal)} rows).")
-        except Exception as _exc:
-            st.error(f"Could not save calendar: {str(_exc)[:120]}")
+    st.caption("Source: Forex Factory's published weekly calendar feed only. The bot automatically refreshes every 15 minutes and accepts only High-impact red-folder events. Medium, low, holiday and all other calendar sources are excluded. If the feed is unavailable and no successful cache exists, new entries are blocked while protection is ON.")
     _cal_df, _cal_status = load_news_calendar()
     if st.session_state.get("news_protection_enabled", True):
         if not _cal_df.empty:
-            st.success(f"Protection enabled · {_cal_df.shape[0]} high-impact events loaded. {_cal_status}")
+            st.success(f"Protection enabled · {_cal_df.shape[0]} Forex Factory red-folder events loaded. {_cal_status}")
             _show_cols = [c for c in ["datetime_utc", "currency", "impact", "event", "status", "confidence"] if c in _cal_df.columns]
             st.dataframe(_cal_df[_show_cols].head(20), use_container_width=True, hide_index=True)
         else:

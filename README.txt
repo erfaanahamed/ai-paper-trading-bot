@@ -28,7 +28,7 @@ Multi-strategy engine update:
 - Added separate rule-based strategy votes for trend following, mean reversion, breakout, momentum, range trading, volatility expansion, price action, and a simplified liquidity-sweep proxy.
 - Added market regime labels (trending, ranging, squeeze/quiet, mixed) and strategy vote counts to the all-market scanner.
 - Automatic paper entries now use the ensemble: at least two aligned strategy votes and a non-tied majority are required, before the existing learning gate and risk/position checks.
-- This is a limited strategy ensemble, not literally every strategy used worldwide. SMC is represented only by a simplified liquidity-sweep proxy. News trading is not activated because no live economic calendar/news feed is configured; do not assume news protection is working.
+- This is a limited strategy ensemble, not literally every strategy used worldwide. SMC is represented only by a simplified liquidity-sweep proxy. News Protection uses the published Forex Factory/Fair Economy weekly calendar feed and filters strictly to red-folder (High-impact) events. The feed can fail or be incomplete; when no valid feed/cache is available, new entries are blocked while protection is ON.
 - Backtest functions still use the legacy directional signal logic, so results from that backtest do not yet validate the new ensemble. A separate ensemble backtest and walk-forward validation are needed before assessing performance.
 
 Adaptive strategy-selection update:
@@ -50,8 +50,11 @@ V2 ADVANCED RESEARCH + NEWS PROTECTION:
 
 
 V3 AUTOMATIC NEWS CALENDAR:
-- News Protection now automatically fetches scheduled high-impact ("red-folder") economic events from ShowMyTrades' public economic calendar API.
+- News Protection now automatically fetches scheduled high-impact ("red-folder") economic events from Forex Factory' public economic calendar API.
 - API documentation: https://showmytrades.com/docs/api/economic-calendar
-- Refresh interval is 15 minutes, cached in the Streamlit session. The automatic feed is preferred; optional uploaded CSV is fallback only.
+- Forex Factory weekly feed refresh interval is 15 minutes, cached in the Streamlit session. No other calendar provider or CSV fallback is used.
 - If the feed is unavailable and no recent cache/valid fallback exists, News Protection ON blocks new entries (fail-closed). It continues managing existing paper positions.
 - API coverage is the provider's supported currencies (USD, EUR, GBP, JPY, AUD, NZD, CAD, CHF, CNY); event schedules can be revised and feeds can fail. This is scheduled economic-news protection, not a guarantee against all news or unscheduled headlines.
+
+
+NEWS SOURCE UPDATE (V5): News Protection uses only Forex Factory/Fair Economy published weekly JSON feed at https://nfs.faireconomy.media/ff_calendar_thisweek.json. Only impact="High" (red-folder) events are accepted. No ShowMyTrades, third-party calendar, or uploaded CSV fallback is used. Feed refresh interval: 15 minutes. The published feed covers the current week; a successful cached result is used if refresh fails. If no valid feed/cache exists, News Protection blocks new entries. Forex Factory notices prohibit copying/redistribution of calendar data without written consent; this bot uses the public feed for local paper-trading protection and does not republish it.
