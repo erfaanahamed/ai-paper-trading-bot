@@ -1,0 +1,21 @@
+AI Brain V7 — Optional SMC research module
+
+Added:
+- Causal OHLC-based SMC heuristics in trading_engine/smc.py.
+- Bullish/bearish Order Block candidates and active-zone boundaries.
+- BOS and CHOCH heuristic flags.
+- Three-candle Fair Value Gap (FVG) flags.
+- Prior-range liquidity sweep flags.
+- Optional SMC confluence vote in the multi-strategy engine, enabled by default and switchable in the sidebar.
+- SMC feature panel and active Order Block boundaries on the chart.
+- SMC strategy candidate in the research-only Strategy Discovery Lab.
+- Three new automated SMC tests.
+
+Safety/limitations:
+- Paper trading only; no broker, exchange, wallet, or live order connection.
+- SMC features are heuristic interpretations of OHLC price action, not proof of institutional orders.
+- SMC is optional, not required for every trade.
+- Discovery results are research-only and do not automatically promote strategies.
+- The detector uses prior-only swing levels and completed-candle data; real-time provider bars can still be incomplete/delayed.
+- Forex Factory red-folder protection and Pause/Resume/Stop controls are retained from V6.
+- Dashboard uses the existing 30-second Streamlit rerun timer; this does not eliminate whole-script reruns.

@@ -10,6 +10,7 @@ from streamlit_autorefresh import st_autorefresh
 import json
 from pathlib import Path
 import requests
+from trading_engine.smc import add_smc_features, smc_signal
 
 
 # -----------------------------
@@ -591,6 +592,9 @@ def evaluate_multi_strategy(last, bias="Unknown"):
     if all(np.isfinite(x) for x in [c, h, l, prev_sup, prev_res]):
         if l < prev_sup and c > prev_sup: votes["Liquidity sweep (proxy)"] = "BUY"
         elif h > prev_res and c < prev_res: votes["Liquidity sweep (proxy)"] = "SELL"
+    # Optional SMC vote: explicit heuristic features are added to candle frames upstream.
+    # It is one strategy family among several and is never mandatory for all entries.
+    votes["SMC confluence (OB/BOS/CHOCH/FVG/sweep)"] = smc_signal(last) if st.session_state.get("smc_enabled", True) else "WAIT"
     buys = sum(v == "BUY" for v in votes.values())
     sells = sum(v == "SELL" for v in votes.values())
     regime, width, atr_pct = detect_market_regime(last)
@@ -680,7 +684,7 @@ def scan_all_market_signals():
                     "RSI": None, "ADX": None, "Data status": "Insufficient candles or provider returned no data"
                 })
                 continue
-            market_data = add_adaptive_levels(add_indicators(raw_market), tf)
+            market_data = add_smc_features(add_adaptive_levels(add_indicators(raw_market), tf))
             market_data["PrevClose"] = market_data["Close"].shift(1)
             market_data["PrevSupport"] = market_data["Low"].rolling(20).min().shift(2)
             market_data["PrevResistance"] = market_data["High"].rolling(20).max().shift(2)
@@ -771,7 +775,7 @@ def make_trade_levels(last, side, risk_pct, rr2):
 
 def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, threshold,
                              risk_pct, rr2, balance, trades_today, max_trades_per_day,
-                             daily_start_balance, max_daily_loss_pct, open_positions):
+                             daily_start_balance, max_daily_loss_pct, open_positions, allow_new_entries=True):
     """
     Process the latest CLOSED candle once per market/timeframe, update exits for existing
     simulated positions, and open at most one new paper position per scan.
@@ -868,6 +872,12 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
         trades_today = 0
         daily_state = {"date": today}
         st.session_state.auto_daily_state = daily_state
+
+    # Pause mode still manages open positions but blocks all new entries.
+    if not allow_new_entries:
+        processed[market_key] = bar_time
+        st.session_state.auto_last_processed = processed
+        return balance, trades_today, daily_start_balance, open_positions, events, "Paused: existing positions managed; new entries disabled."
 
     daily_loss_pct = (daily_start_balance - balance) / max(daily_start_balance, 1) * 100
     if daily_loss_pct >= max_daily_loss_pct:
@@ -1168,7 +1178,10 @@ with st.sidebar:
         st.session_state.settings_max_trades_per_day_applied = max_trades_per_day
         st.session_state.settings_rr2_applied = rr2
         st.success("Settings confirmed for this session.")
-    st.caption("The multi-strategy engine evaluates trend, mean reversion, breakout, momentum, range, volatility expansion, price action and a liquidity-sweep proxy. Entries are simulated paper trades only.")
+    st.caption("The multi-strategy engine evaluates trend, mean reversion, breakout, momentum, range, volatility expansion, price action and optional SMC confluence. Entries are simulated paper trades only.")
+    st.subheader("🧩 Optional Smart Money Concepts")
+    st.checkbox("Use SMC confluence in decisions", value=st.session_state.get("smc_enabled", True), key="smc_enabled", help="SMC is optional; other strategy families remain eligible when there is no SMC setup.")
+    st.caption("SMC detects heuristic Order Blocks, BOS, CHOCH, Fair Value Gaps and liquidity sweeps from candle OHLC data.")
 
     st.divider()
     st.subheader("📰 Forex Factory Red-Folder News Protection")
@@ -1223,7 +1236,7 @@ else:
 
 # Streamlit reruns the script on this timer while the browser session is connected.
 # Automatic paper scans are gated below so ordinary UI reruns do not trigger new entries.
-auto_refresh_count = st_autorefresh(interval=60_000, limit=None, key="ai_brain_auto_refresh_60s")
+auto_refresh_count = st_autorefresh(interval=30_000, limit=None, key="ai_brain_auto_refresh_30s")
 if "auto_last_refresh_count" not in st.session_state:
     st.session_state.auto_last_refresh_count = auto_refresh_count
 
@@ -1260,7 +1273,7 @@ if news_on:
     st.info("News Protection is ON. New paper entries are blocked unless a valid calendar is loaded and the market is outside its high-impact event window.")
 else:
     st.warning("News Protection is OFF. Scheduled-news entry blocking is disabled.")
-st.caption("Refreshes about every 60 seconds while this page stays open and connected. Yahoo Finance is an indicative data source, not guaranteed real-time broker data.")
+st.caption("The app script reruns about every 30 seconds while this page stays open and connected. Yahoo Finance is an indicative data source, not guaranteed real-time broker data.")
 with st.spinner("Analyzing all configured markets..."):
     overview = scan_all_market_signals()
 if not overview.empty:
@@ -1343,7 +1356,7 @@ else:
 st.divider()
 st.subheader(f"📊 Detailed chart and indicators: {market_name}")
 with st.expander("🧠 Multi-strategy engine: strategy votes & market regime", expanded=True):
-    st.write("The engine evaluates eight rule-based strategy families, detects a broad market regime, then selects up to three strategies per symbol/timeframe. It uses closed-trade outcomes recorded for that exact market and timeframe when enough examples exist; otherwise it uses regime-based priors during warm-up. At least two selected strategies must agree. This is adaptive research logic, not literally every strategy worldwide. Live news trading is not active without an economic-calendar/news feed.")
+    st.write("The engine evaluates multiple rule-based strategy families, including optional SMC confluence, detects a broad market regime, then selects up to three strategies per symbol/timeframe. It uses closed-trade outcomes recorded for that exact market and timeframe when enough examples exist; otherwise it uses regime-based priors during warm-up. At least two selected strategies must agree. This is adaptive research logic, not literally every strategy worldwide. Live news trading is not active without an economic-calendar/news feed.")
     if not overview.empty:
         cols = [c for c in ["Market", "Signal", "Market regime", "Strategy BUY votes", "Strategy SELL votes", "Selected strategies", "Selection mode", "Data status"] if c in overview.columns]
         st.dataframe(overview[cols], use_container_width=True, hide_index=True)
@@ -1353,7 +1366,7 @@ st.caption(f"Per-symbol auto-trading is {'ON' if st.session_state.symbol_trade_e
 with st.spinner("Downloading selected-market candles and evaluating the AI Brain..."):
     raw = download_data(cfg["symbol"], signal_tf)
     htf = download_data(cfg["symbol"], htf_tf)
-    data = add_adaptive_levels(add_indicators(raw), signal_tf) if not raw.empty else pd.DataFrame()
+    data = add_smc_features(add_adaptive_levels(add_indicators(raw), signal_tf)) if not raw.empty else pd.DataFrame()
     if not data.empty:
         data["PrevClose"] = data["Close"].shift(1)
         data["PrevSupport"] = data["Low"].rolling(20).min().shift(2)
@@ -1387,6 +1400,13 @@ m3.metric("AI Signal strength", f"{score}/100")
 m4.metric("RSI / MFI", f"{last['RSI']:.1f} / {last['MFI']:.1f}" if pd.notna(last["MFI"]) else f"{last['RSI']:.1f} / n/a")
 m5.metric("ADX / Rel. volume", f"{last['ADX']:.1f} / {last['RelVol']:.2f}x" if pd.notna(last["RelVol"]) else f"{last['ADX']:.1f} / n/a")
 
+with st.expander("🧩 SMC detector — Order Blocks, BOS, CHOCH, FVG & Liquidity Sweeps", expanded=False):
+    smc_now = smc_signal(last)
+    st.write(f"Optional SMC candidate: **{smc_now}** · SMC voting is {'ON' if st.session_state.get('smc_enabled', True) else 'OFF'}.")
+    smc_cols = ["SMC_BOS", "SMC_CHOCH", "SMC_FVG", "SMC_OB", "SMC_OB_Retest", "SMC_LiquiditySweep", "SMC_Active_OB_Bottom", "SMC_Active_OB_Top"]
+    st.dataframe(data[smc_cols].tail(12), use_container_width=True)
+    st.caption("SMC zones are rule-based OHLC heuristics, not proof of institutional orders. BOS/CHOCH and zones can be noisy; validate them on unseen data before relying on them.")
+
 with st.expander("🧠 Self-learning engine — trade outcomes + machine learning", expanded=True):
     l1, l2, l3 = st.columns(3)
     l1.metric("Completed learning trades", learning["closed_samples"])
@@ -1408,11 +1428,35 @@ else:
     st.warning(f"WAIT — no setup passed all filters. Best-side Signal strength: {score}/100. {ml_note}")
 
 st.subheader("Automatic paper trading")
-st.caption(f"Paper trading only. The app refreshes analysis about every 60 seconds while this page stays open and connected. Last dashboard refresh: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}. Cloud sleep, browser disconnection, or provider delays can interrupt scans.")
-st.success("Automatic paper scanner: RUNNING")
+st.caption(f"Paper trading only. The app script reruns about every 30 seconds while this page stays open and connected. Last refresh: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}. Streamlit reruns the app script rather than updating only individual widgets. Cloud sleep, browser disconnection, or provider delays can interrupt scans.")
 
+if "auto_bot_status" not in st.session_state:
+    st.session_state.auto_bot_status = "RUNNING"
+ctrl1, ctrl2, ctrl3, ctrl4 = st.columns([1, 1, 1, 2])
+with ctrl1:
+    if st.button("⏸️ Pause", use_container_width=True, disabled=st.session_state.auto_bot_status != "RUNNING"):
+        st.session_state.auto_bot_status = "PAUSED"
+        st.session_state.last_auto_message = "Bot paused: no new paper entries; existing positions will continue to be managed."
+        st.rerun()
+with ctrl2:
+    if st.button("▶️ Resume / Start", use_container_width=True, disabled=st.session_state.auto_bot_status == "RUNNING"):
+        st.session_state.auto_bot_status = "RUNNING"
+        st.session_state.last_auto_message = "Bot started/resumed. Automatic paper scanning is enabled."
+        st.rerun()
+with ctrl3:
+    if st.button("⏹️ Stop", use_container_width=True, disabled=st.session_state.auto_bot_status == "STOPPED"):
+        st.session_state.auto_bot_status = "STOPPED"
+        st.session_state.last_auto_message = "Bot stopped: automatic scans and new entries are disabled. Open paper positions and trade history are preserved; positions are not automatically closed."
+        st.rerun()
+with ctrl4:
+    if st.session_state.auto_bot_status == "RUNNING":
+        st.success("Bot status: RUNNING")
+    elif st.session_state.auto_bot_status == "PAUSED":
+        st.warning("Bot status: PAUSED — managing existing positions only")
+    else:
+        st.error("Bot status: STOPPED — automatic scanning disabled")
 
-def run_all_market_scan():
+def run_all_market_scan(allow_new_entries=True):
     all_events = []
     messages = []
     # The Market dropdown is for detailed diagnostics only; automatic paper entries
@@ -1425,7 +1469,7 @@ def run_all_market_scan():
             if scan_raw.empty or len(scan_raw) < 60:
                 all_events.append(f"{scan_name}: skipped; insufficient market data.")
                 continue
-            scan_data = add_adaptive_levels(add_indicators(scan_raw), scan_tf)
+            scan_data = add_smc_features(add_adaptive_levels(add_indicators(scan_raw), scan_tf))
             scan_data["PrevClose"] = scan_data["Close"].shift(1)
             scan_data["PrevSupport"] = scan_data["Low"].rolling(20).min().shift(2)
             scan_data["PrevResistance"] = scan_data["High"].rolling(20).max().shift(2)
@@ -1437,7 +1481,8 @@ def run_all_market_scan():
                 scan_data, scan_name, scan_cfg["symbol"], scan_tf, scan_bias, None,
                 risk_pct, rr2, st.session_state.balance, st.session_state.trades_today,
                 max_trades_per_day, st.session_state.auto_daily_start_balance,
-                max_daily_loss, st.session_state.auto_open_positions
+                max_daily_loss, st.session_state.auto_open_positions,
+                allow_new_entries=allow_new_entries
             )
             all_events.extend(scan_events)
             if scan_message:
@@ -1448,16 +1493,19 @@ def run_all_market_scan():
     st.session_state.last_auto_message = "All-market scan completed. " + (" ".join(messages) if messages else "No new entries were opened; see market signals and events.")
 
 # Run once for each 60-second timer tick while the scanner is armed.
-if st.session_state.auto_bot_status == "RUNNING" and auto_refresh_count > st.session_state.auto_last_refresh_count:
+if auto_refresh_count > st.session_state.auto_last_refresh_count:
     st.session_state.auto_last_refresh_count = auto_refresh_count
-    run_all_market_scan()
-    st.rerun()
-else:
-    # Keep the counter in sync while paused/stopped so restarting doesn't replay old ticks.
-    st.session_state.auto_last_refresh_count = auto_refresh_count
+    if st.session_state.auto_bot_status == "RUNNING":
+        run_all_market_scan(allow_new_entries=True)
+        st.rerun()
+    elif st.session_state.auto_bot_status == "PAUSED":
+        run_all_market_scan(allow_new_entries=False)
+        st.rerun()
+# STOPPED disables automatic scans; the dashboard may still rerun for display.
 
-if st.button("🔎 Scan market & manage paper positions now", type="primary"):
-    run_all_market_scan()
+if st.button("🔎 Scan & manage positions now", type="primary",
+             disabled=st.session_state.auto_bot_status == "STOPPED"):
+    run_all_market_scan(allow_new_entries=st.session_state.auto_bot_status == "RUNNING")
     st.rerun()
 
 if st.session_state.get("last_auto_message"):
@@ -1535,7 +1583,7 @@ with st.expander("AI Brain — condition-by-condition explanation", expanded=Tru
         st.write(("✅ " if passed else "⬜ ") + name)
 
 with st.expander("🧪 Advanced Strategy Discovery Lab", expanded=False):
-    st.write("Research-only candidate testing. It compares a small, explicit strategy library on chronological train/validation segments; it does not guarantee profitability and does not silently replace the running strategy.")
+    st.write("Research-only candidate testing. It compares a small, explicit strategy library (including an SMC candidate) on chronological train/validation segments; it does not guarantee profitability and does not silently replace the running strategy.")
     st.caption("Candidates are assessed after estimated round-trip costs. A candidate is only research-eligible when it has enough validation trades and positive validation expectancy. Final adoption still requires longer walk-forward and paper-trading validation.")
     if st.button("Run strategy discovery on selected market", key="run_strategy_discovery"):
         try:
@@ -1555,6 +1603,9 @@ fig = go.Figure(data=[go.Candlestick(x=chart_df.index, open=chart_df["Open"], hi
 for col, label in [("EMA9","EMA 9"),("EMA21","EMA 21"),("EMA50","EMA 50"),("EMA200","EMA 200"),("BB_Upper","BB Upper"),("BB_Mid","BB Middle"),("BB_Lower","BB Lower"),("Support","Support"),("Resistance","Resistance"),("PowerUpper","Power Upper"),("PowerMid","Power Mid"),("PowerLower","Power Lower")]:
     if col in chart_df:
         fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df[col], mode="lines", name=label, connectgaps=False))
+for col, label in [("SMC_Active_OB_Top", "SMC Active OB Top"), ("SMC_Active_OB_Bottom", "SMC Active OB Bottom")]:
+    if col in chart_df and chart_df[col].notna().any():
+        fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df[col], mode="lines", name=label, line=dict(dash="dash"), connectgaps=True))
 fig.update_layout(height=620, xaxis_rangeslider_visible=False, legend_orientation="h", margin=dict(l=10,r=10,t=30,b=10))
 # Draw active automatic position levels when they belong to the selected market.
 for pos in st.session_state.auto_open_positions:
