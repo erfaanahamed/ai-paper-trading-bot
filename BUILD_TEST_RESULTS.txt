@@ -1,6 +1,8 @@
-AI Brain V7 build checks
-- Python syntax compilation: PASS (app.py, trading_engine/smc.py, trading_engine/strategy_discovery.py)
-- Automated tests: 32 passed
-- ZIP integrity: checked after packaging
-- Trading mode: paper only
-- Note: automated tests do not prove profitability or validate live data-feed availability.
+AI Brain Trading Bot V5 build checks
+- app.py syntax compilation: PASSED
+- Automated tests: 29 passed (PYTHONPATH=. pytest -q)
+- News calendar source: Forex Factory/Fair Economy published weekly feed only
+- Impact filter: High only (red folder); medium/low/holiday excluded
+- Refresh: 15 minutes with last-successful session cache
+- Fail-safe: if no valid feed/cache is available while News Protection is ON, new entries are blocked
+- Limitation: weekly feed availability/coverage is not guaranteed; this is scheduled calendar news, not unscheduled breaking headlines.

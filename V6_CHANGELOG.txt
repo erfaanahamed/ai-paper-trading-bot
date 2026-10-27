@@ -1,0 +1,9 @@
+AI Brain V6 control update
+- Added Pause, Resume/Start, and Stop controls.
+- Pause: continues automatic scans to manage existing paper positions, but blocks new entries.
+- Stop: disables automatic scans and new entries; open paper positions and trade history are preserved and are not auto-closed.
+- Resume/Start: re-enables automatic scans.
+- Dashboard timer changed from 60 seconds to 30 seconds.
+- Streamlit still reruns the app script on its timer; this is not a partial widget-only refresh.
+- Paper-trading only; no live broker orders.
+Validation: app.py syntax compilation passed; 29 existing tests passed.

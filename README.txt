@@ -58,11 +58,3 @@ V3 AUTOMATIC NEWS CALENDAR:
 
 
 NEWS SOURCE UPDATE (V5): News Protection uses only Forex Factory/Fair Economy published weekly JSON feed at https://nfs.faireconomy.media/ff_calendar_thisweek.json. Only impact="High" (red-folder) events are accepted. No ShowMyTrades, third-party calendar, or uploaded CSV fallback is used. Feed refresh interval: 15 minutes. The published feed covers the current week; a successful cached result is used if refresh fails. If no valid feed/cache exists, News Protection blocks new entries. Forex Factory notices prohibit copying/redistribution of calendar data without written consent; this bot uses the public feed for local paper-trading protection and does not republish it.
-
-
-V7 OPTIONAL SMC MODULE
-- Optional Smart Money Concepts heuristic features: Order Blocks, BOS, CHOCH, FVG and liquidity sweeps.
-- Toggle "Use SMC confluence in decisions" in the sidebar. Other strategy families remain available when SMC has no setup.
-- SMC chart zone lines and a diagnostic panel are available in the selected-market view.
-- Strategy Discovery Lab includes an SMC candidate for chronological validation; it does not auto-promote strategies.
-- SMC definitions are algorithmic heuristics, not proof of institutional orders; paper-test and validate before relying on them.
