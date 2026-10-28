@@ -1,0 +1,20 @@
+AI BRAIN V7 — BUTTONS NOT SHOWING FIX
+
+The three controls are in the root app.py sidebar under “Market Session Protection”.
+If Streamlit runs trading_engine/app.py, it now forwards to the full root app.py instead of showing the thin research viewer.
+
+Expected repository root:
+  app.py
+  smc.py
+  requirements.txt
+  trading_engine/
+
+IMPORTANT: In Streamlit Cloud, set Main file path to app.py (recommended), not trading_engine/app.py.
+Upload/commit the ZIP CONTENTS to the same GitHub branch connected to Streamlit, then reboot the app.
+
+Sidebar controls:
+  30 MIN BEFORE MARKET CLOSE — ON/OFF
+  30 MIN AFTER MARKET OPENS — ON/OFF
+  SATURDAY & SUNDAY — NO TRADING — ON/OFF
+
+The 30-minute controls block new entries only; existing positions continue to be managed. Market hours are approximate and must be checked against the intended broker's schedule. Paper trading only.

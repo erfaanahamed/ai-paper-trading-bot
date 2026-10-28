@@ -197,6 +197,65 @@ def market_schedule_status(market_name, now_utc=None):
         return "DAILY BREAK", "Daily maintenance break (approx. 17:00–18:00 ET)"
     return "OPEN", "Weekday session (approximate hours; verify broker schedule)"
 
+def market_entry_protection_status(market_name, now_utc=None):
+    """Return (blocked, reason) for NEW entries only. Session hours are approximate."""
+    now_utc = now_utc or datetime.now(timezone.utc)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+
+    cfg = MARKETS.get(market_name, {})
+    kind = cfg.get("kind", "forex")
+    buffer_minutes = int(st.session_state.get("market_protection_buffer_minutes", 30))
+    buffer_minutes = max(0, min(buffer_minutes, 180))
+    preclose_on = bool(st.session_state.get("preclose_protection_enabled", True))
+    postopen_on = bool(st.session_state.get("postopen_protection_enabled", True))
+
+    tz_name = "UTC" if kind == "crypto" else ("America/Chicago" if kind in ("gold", "silver", "oil") else "America/New_York")
+    local = now_utc.astimezone(ZoneInfo(tz_name))
+    minute = local.hour * 60 + local.minute
+
+    # Weekend switch applies to every symbol, including 24/7 crypto.
+    weekend_on = bool(st.session_state.get("weekend_no_trade_enabled", True))
+    if weekend_on and local.weekday() >= 5:
+        return True, f"Saturday/Sunday no-trading is ON ({tz_name})"
+
+    if not (preclose_on or postopen_on):
+        return False, "Market close/open protections are OFF"
+
+    # Crypto has no daily exchange close/open window; weekend toggle still applies.
+    if kind == "crypto":
+        return False, "Crypto trades continuously; daily close/open protection not applicable"
+
+    if kind in ("gold", "silver", "oil"):
+        # Approximate CME-style maintenance break, Chicago time: 16:00 close / 17:00 reopen.
+        close_min, open_min = 16 * 60, 17 * 60
+        # The maintenance break itself is always blocked.
+        if close_min <= minute < open_min:
+            return True, "Market maintenance break; no new entries"
+        if preclose_on and close_min - buffer_minutes <= minute < close_min:
+            return True, f"Within {buffer_minutes} minutes before market close"
+        if postopen_on and open_min <= minute < open_min + buffer_minutes:
+            return True, f"Within {buffer_minutes} minutes after market reopening"
+        # Approximate weekly close/reopen windows.
+        if local.weekday() == 4 and minute >= close_min:
+            return True, "Weekly market closure"
+        if local.weekday() == 6 and minute < open_min:
+            return True, "Weekly market closure before reopening"
+        return False, "Outside configured market close/open protection windows"
+
+    # Approximate FX rollover at 17:00 New York time.
+    rollover = 17 * 60
+    if local.weekday() == 4 and minute >= rollover:
+        return True, "Weekly FX market closure"
+    if local.weekday() == 6 and minute < rollover:
+        return True, "FX market closed before Sunday reopening"
+    if preclose_on and rollover - buffer_minutes <= minute < rollover:
+        return True, f"Within {buffer_minutes} minutes before FX rollover/close"
+    if postopen_on and rollover <= minute < rollover + buffer_minutes:
+        return True, f"Within {buffer_minutes} minutes after FX rollover/reopening"
+    return False, "Outside configured market close/open protection windows"
+
+
 def current_global_sessions(now_utc=None):
     now_utc = now_utc or datetime.now(timezone.utc)
     sessions = [
@@ -928,6 +987,13 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
         st.session_state.auto_last_processed = processed
         return balance, trades_today, daily_start_balance, open_positions, events, "Symbol trading is OFF."
 
+    session_blocked, session_reason = market_entry_protection_status(market_name)
+    if session_blocked:
+        events.append(f"{market_name}: MARKET SESSION BLOCK — {session_reason}. Existing positions remain managed; no new entry opened.")
+        processed[market_key] = bar_time
+        st.session_state.auto_last_processed = processed
+        return balance, trades_today, daily_start_balance, open_positions, events, "Market session protection blocked new entry."
+
     news_blocked, news_reason, news_next = news_protection_status(market_name)
     if news_blocked:
         events.append(f"{market_name}: NEWS PROTECTION BLOCK — {news_reason}")
@@ -1231,6 +1297,33 @@ with st.sidebar:
             st.error(f"Protection is enabled but no valid calendar is available. New entries will be blocked. {_cal_status}")
     else:
         st.warning("Protection disabled. The bot will not block entries around scheduled news.")
+
+    st.divider()
+    st.subheader("⏰ Market Session Protection")
+    st.toggle(
+        "30 MIN BEFORE MARKET CLOSE — ON/OFF",
+        value=st.session_state.get("preclose_protection_enabled", True),
+        key="preclose_protection_enabled",
+        help="ON blocks new entries during the 30 minutes before the estimated market close.",
+    )
+    st.toggle(
+        "30 MIN AFTER MARKET OPENS — ON/OFF",
+        value=st.session_state.get("postopen_protection_enabled", True),
+        key="postopen_protection_enabled",
+        help="ON blocks new entries during the 30 minutes after the estimated market reopening.",
+    )
+    st.slider(
+        "Protection buffer (minutes)", 0, 180,
+        int(st.session_state.get("market_protection_buffer_minutes", 30)), 5,
+        key="market_protection_buffer_minutes",
+    )
+    st.toggle(
+        "SATURDAY & SUNDAY — NO TRADING — ON/OFF",
+        value=st.session_state.get("weekend_no_trade_enabled", True),
+        key="weekend_no_trade_enabled",
+        help="ON blocks all new entries on Saturdays and Sundays for every symbol, including crypto. Existing positions continue to be managed.",
+    )
+    st.caption("Session hours are approximate, not broker-specific. Check your broker's schedule. These switches block new entries only; they do not close open positions.")
 
 if "starting_balance_applied" not in st.session_state:
     st.session_state.starting_balance_applied = float(STARTING_BALANCE)
