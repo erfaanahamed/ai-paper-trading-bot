@@ -40,25 +40,55 @@ def evaluate_multi_strategy(last,bias="Unknown"):
     b=sum(x=="BUY" for x in v.values()); s=sum(x=="SELL" for x in v.values()); side="BUY" if b>=2 and b>s else "SELL" if s>=2 and s>b else "WAIT"
     return side,int(round(100*max(b,s)/len(v))),v,_regime(last),b,s
 def adaptive_strategy_selection(votes,regime,market_name,timeframe,history):
-    priors={"TRENDING":["Trend following","Momentum","Breakout","Price action","Volatility expansion"],"RANGING":["Mean reversion","Range trading","Liquidity sweep (proxy)"],"SQUEEZE / QUIET":["Breakout","Volatility expansion","Range trading"],"MIXED":["Trend following","Breakout","Mean reversion","Momentum","Price action","Range trading"]}.get(regime,STRATEGIES)
-    perf={}; df=pd.DataFrame(history or [])
-    if not df.empty and "strategy_names" in df and "net_pnl" in df:
-        if "market" in df:df=df[df.market==market_name]
-        if "timeframe" in df:df=df[df.timeframe==timeframe]
-        for _,r in df.tail(500).iterrows():
-            for name in str(r.strategy_names).split("; "):perf.setdefault(name,[]).append(float(r.net_pnl))
-    def rank(s):
-        vals=perf.get(s,[])[-30:]; prior=.08 if s in priors else 0
-        if len(vals)<5:return (prior,0,len(vals))
-        wr=(sum(x>0 for x in vals)+2.5)/(len(vals)+5); avg=np.tanh(np.mean(vals));return (prior+wr-.5+.05*avg,avg,len(vals))
-    selected=sorted(votes,key=rank,reverse=True)[:3]; active={s:votes.get(s,"WAIT") for s in selected}; b=sum(v=="BUY" for v in active.values()); se=sum(v=="SELL" for v in active.values()); side="BUY" if b>=2 and b>se else "SELL" if se>=2 and se>b else "WAIT"
-    return {"side":side,"selected":selected,"votes":votes,"regime":regime,"note":"performance-adaptive" if any(len(perf.get(x,[]))>=5 for x in selected) else "regime-prior warm-up"}
+    """Walk-forward-validated weighted voting from completed trade history.
+
+    Weights remain regime-prior based until each strategy has enough outcomes to
+    train on an older window and pass a newer chronological holdout window.
+    """
+    priors={"TRENDING":["Trend following","Momentum","Breakout","Price action","Volatility expansion"],
+            "RANGING":["Mean reversion","Range trading","Liquidity sweep (proxy)"],
+            "SQUEEZE / QUIET":["Breakout","Volatility expansion","Range trading"],
+            "MIXED":["Trend following","Breakout","Mean reversion","Momentum","Price action","Range trading"]}.get(regime,STRATEGIES)
+    df=pd.DataFrame(history or [])
+    outcomes={}
+    if not df.empty and "strategy_names" in df.columns and "net_pnl" in df.columns:
+        if "market" in df: df=df[df.market.astype(str)==str(market_name)]
+        if "timeframe" in df: df=df[df.timeframe.astype(str)==str(timeframe)]
+        time_col=next((c for c in ["closed_at","time","timestamp","closed"] if c in df.columns),None)
+        if time_col:
+            df=df.assign(_time=pd.to_datetime(df[time_col],errors="coerce",utc=True)).sort_values("_time",kind="stable")
+        df["_pnl"]=pd.to_numeric(df["net_pnl"],errors="coerce")
+        for _,row in df.dropna(subset=["_pnl"]).iterrows():
+            for name in [x.strip() for x in str(row.get("strategy_names","")).split("; ") if x.strip() and x.strip()!="nan"]:
+                outcomes.setdefault(name,[]).append(float(row["_pnl"]))
+    candidates=list(dict.fromkeys(list(votes.keys())+priors))
+    weights={}; validated=[]
+    for name in candidates:
+        vals=outcomes.get(name,[]); base=1.15 if name in priors else .85
+        if len(vals)<20:
+            weights[name]=base; continue
+        split=int(len(vals)*.70); train=np.asarray(vals[:split],dtype=float); hold=np.asarray(vals[split:],dtype=float)
+        if len(train)<12 or len(hold)<5 or not np.isfinite(train).all() or not np.isfinite(hold).all():
+            weights[name]=base; continue
+        wr=(np.sum(train>0)+2.5)/(len(train)+5.0); edge=float(np.mean(train))
+        if float(np.mean(hold))>0 and float(np.mean(hold>0))>=.5 and edge>0:
+            weights[name]=float(np.clip(base+4*(max(0.,wr-.5)+.25*np.tanh(edge)),.5,2.5)); validated.append(name)
+        else: weights[name]=max(.5,base*.75)
+    total=sum(weights.values()) or 1.
+    buy_score=100*sum(weights.get(n,1.) for n,v in votes.items() if v=="BUY")/total
+    sell_score=100*sum(weights.get(n,1.) for n,v in votes.items() if v=="SELL")/total
+    b=sum(v=="BUY" for v in votes.values()); se=sum(v=="SELL" for v in votes.values())
+    side="BUY" if b>=2 and buy_score>=60 and buy_score>sell_score else "SELL" if se>=2 and sell_score>=60 and sell_score>buy_score else "WAIT"
+    selected=sorted(candidates,key=lambda n:weights.get(n,1.),reverse=True)[:3]
+    note="Walk-forward validated weighted voting" if validated else "Walk-forward warm-up: regime priors used until enough validated outcomes"
+    return {"side":side,"selected":selected,"votes":votes,"regime":regime,"note":note,"weights":weights,"buy_score":round(buy_score,1),"sell_score":round(sell_score,1),"validated":validated}
+
 def primary_signal(df,regime,market,tf,history):
     if df is None or df.empty:return {"side":"WAIT","score":0,"votes":{},"selected":[],"regime":regime,"note":"no data"}
     r=df.iloc[-1]; side,score,votes,detected,*_=evaluate_multi_strategy(r)
     chosen=adaptive_strategy_selection(votes,regime or detected,market,tf,history)
-    b=sum(v=="BUY" for v in chosen['votes'].values()); s=sum(v=="SELL" for v in chosen['votes'].values())
-    return {"side":chosen['side'],"score":score,"votes":votes,"selected":chosen['selected'],"regime":regime or detected,"note":chosen['note']}
+    weighted_score=max(chosen.get("buy_score",0),chosen.get("sell_score",0))
+    return {"side":chosen['side'],"score":weighted_score,"votes":votes,"selected":chosen['selected'],"regime":regime or detected,"note":chosen['note'],"weights":chosen.get("weights",{}),"buy_score":chosen.get("buy_score",0),"sell_score":chosen.get("sell_score",0)}
 def primary_signals_batch(df,market,tf,history):
     out=[]
     for i in range(len(df)):

@@ -1,0 +1,17 @@
+AI Brain V7 - Weighted Multi-Strategy Voting Update
+
+Selected configuration: Option C - periodic walk-forward retraining/validation.
+
+What changed:
+- Multi-strategy entry decisions now use weighted BUY and SELL support scores.
+- During warm-up, weights use conservative market-regime priors.
+- Once a strategy has at least 20 recorded closed-trade outcomes for the same market/timeframe, older outcomes (70%) are used for training and the newest 30% are held out for validation.
+- A learned weight is only increased when training expectancy is positive and the chronological holdout has positive average PnL and at least 50% positive outcomes. Otherwise the strategy falls back to a reduced/prior weight.
+- Entry requires at least two strategy signals on the same side and at least 60% weighted support; otherwise the signal is WAIT.
+- All strategy signals remain available for trade attribution; the top three weights are shown as selected strategies.
+- Existing 60-minute market-close/reopen protection and weekend controls are retained from the strict-protection project.
+
+Limitations:
+- The strategy outcome attribution uses the strategies recorded as supporting a paper-trade entry, so it is not an independent standalone backtest of every strategy signal.
+- The 60% threshold and minimum sample size are initial safeguards, not proven optimal values.
+- Local tests do not prove profitable future performance or verify the live Streamlit deployment.

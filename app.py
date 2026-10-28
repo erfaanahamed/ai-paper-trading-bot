@@ -679,10 +679,14 @@ def evaluate_multi_strategy(last, bias="Unknown"):
 
 
 def adaptive_strategy_selection(votes, regime, market_name, timeframe, trades):
-    """Choose strategies per symbol/timeframe using regime priors plus completed-trade evidence.
+    """Weighted strategy voting with chronological train/validation checks.
 
-    Performance evidence is only used when closed trades explicitly record the strategy names.
-    With too little history, the engine falls back to conservative regime-based priors.
+    Closed trade outcomes are attributed only to the strategies recorded as supporting
+    the entry. For each strategy, older outcomes form the training window and the most
+    recent 30% form a holdout validation window. Learned weights are used only when
+    sample-size and holdout expectancy checks pass; otherwise conservative regime priors
+    keep the system in warm-up. This is a lightweight walk-forward-style validation,
+    not a guarantee of future performance.
     """
     regime_priors = {
         "TRENDING": ["Trend following", "Momentum", "Breakout", "Price action", "Volatility expansion"],
@@ -693,6 +697,7 @@ def adaptive_strategy_selection(votes, regime, market_name, timeframe, trades):
     priors = regime_priors.get(regime, regime_priors["MIXED"])
     df = pd.DataFrame(trades or [])
     perf = {}
+    strategy_outcomes = {}
     if not df.empty and "Strategy names" in df.columns and "PnL (estimated price-units)" in df.columns:
         df = df.copy()
         if "Status" in df.columns:
@@ -702,38 +707,68 @@ def adaptive_strategy_selection(votes, regime, market_name, timeframe, trades):
         if "TF" in df.columns:
             df = df[df["TF"].astype(str).eq(str(timeframe))]
         df["_pnl"] = pd.to_numeric(df["PnL (estimated price-units)"], errors="coerce")
+        time_col = next((c for c in ["Time", "Closed", "Closed at"] if c in df.columns), None)
+        if time_col:
+            df["_time"] = pd.to_datetime(df[time_col], errors="coerce", utc=True)
+            df = df.sort_values("_time", kind="stable")
         for _, row in df.dropna(subset=["_pnl"]).iterrows():
-            for strategy in str(row.get("Strategy names", "")).split("; "):
-                if strategy and strategy != "nan":
-                    perf.setdefault(strategy, []).append(float(row["_pnl"]))
-    # Prioritized strategies first; completed results can move strategies up/down.
-    candidates = list(dict.fromkeys(priors + list(votes.keys())))
-    def rank_key(strategy):
-        results = perf.get(strategy, [])[-30:]
-        prior_bonus = 0.08 if strategy in priors else 0.0
-        if len(results) < 5:
-            # Do not overfit a tiny sample: regime fit dominates until enough outcomes accrue.
-            return (prior_bonus, 0.0, 0.0)
-        wins = sum(x > 0 for x in results)
-        avg_pnl = float(np.mean(results))
-        # Mildly shrink observed win rate toward 50%; allow enough evidence to override priors.
-        shrunk_wr = (wins + 2.5) / (len(results) + 5.0)
-        return (prior_bonus + (shrunk_wr - 0.5) + np.tanh(avg_pnl) * 0.05, avg_pnl, len(results))
-    ranked = sorted(candidates, key=rank_key, reverse=True)
-    selected = ranked[:3]
-    active_votes = {name: votes.get(name, "WAIT") for name in selected}
-    buys = sum(v == "BUY" for v in active_votes.values())
-    sells = sum(v == "SELL" for v in active_votes.values())
-    # Need at least two selected strategies to agree; no single-strategy entries.
-    if buys >= 2 and buys > sells:
+            names = [x.strip() for x in str(row.get("Strategy names", "")).split("; ") if x.strip() and x.strip() != "nan"]
+            for strategy in names:
+                strategy_outcomes.setdefault(strategy, []).append(float(row["_pnl"]))
+                perf.setdefault(strategy, []).append(float(row["_pnl"]))
+
+    candidates = list(dict.fromkeys(list(votes.keys()) + priors))
+    weights = {}
+    validation_notes = []
+    for strategy in candidates:
+        outcomes = strategy_outcomes.get(strategy, [])
+        # Conservative warm-up weights: regime-fit strategies receive a modest prior.
+        base = 1.15 if strategy in priors else 0.85
+        if len(outcomes) < 20:
+            weights[strategy] = base
+            continue
+        split = int(len(outcomes) * 0.70)
+        train = np.asarray(outcomes[:split], dtype=float)
+        holdout = np.asarray(outcomes[split:], dtype=float)
+        if len(train) < 12 or len(holdout) < 5 or not np.isfinite(train).all() or not np.isfinite(holdout).all():
+            weights[strategy] = base
+            continue
+        train_wr = (float(np.sum(train > 0)) + 2.5) / (len(train) + 5.0)
+        train_edge = float(np.mean(train))
+        holdout_wr = float(np.mean(holdout > 0))
+        holdout_edge = float(np.mean(holdout))
+        # Only deploy a learned weight when the untouched chronological holdout
+        # supports positive expectancy; otherwise fall back to the regime prior.
+        if holdout_edge > 0 and holdout_wr >= 0.50 and train_edge > 0:
+            evidence = max(0.0, train_wr - 0.5) + 0.25 * np.tanh(train_edge)
+            weights[strategy] = float(np.clip(base + 4.0 * evidence, 0.5, 2.5))
+            validation_notes.append(strategy)
+        else:
+            weights[strategy] = max(0.5, base * 0.75)
+
+    # Normalize weights across all strategies so BUY/SELL scores are comparable.
+    total_weight = sum(weights.values()) or 1.0
+    buy_weight = sum(weights.get(name, 1.0) for name, signal in votes.items() if signal == "BUY")
+    sell_weight = sum(weights.get(name, 1.0) for name, signal in votes.items() if signal == "SELL")
+    buy_score = 100.0 * buy_weight / total_weight
+    sell_score = 100.0 * sell_weight / total_weight
+    buy_count = sum(signal == "BUY" for signal in votes.values())
+    sell_count = sum(signal == "SELL" for signal in votes.values())
+    if buy_count >= 2 and buy_score >= 60.0 and buy_score > sell_score:
         side = "BUY"
-    elif sells >= 2 and sells > buys:
+    elif sell_count >= 2 and sell_score >= 60.0 and sell_score > buy_score:
         side = "SELL"
     else:
         side = "WAIT"
-    learned_count = sum(len(perf.get(name, [])) >= 5 for name in selected)
-    note = "Performance-adaptive" if learned_count else "Regime-prior warm-up (collecting per-strategy trade history)"
-    return side, selected, active_votes, buys, sells, note, perf
+
+    selected = sorted(candidates, key=lambda name: weights.get(name, 1.0), reverse=True)[:3]
+    active_votes = dict(votes)
+    # Keep every strategy signal visible; selected lists the top three weights.
+    # Display vote scores remain percentages, not raw strategy counts.
+    note = ("Walk-forward validated weighted voting" if validation_notes else
+            "Walk-forward warm-up: regime priors used until enough validated outcomes")
+    return side, selected, active_votes, round(buy_score, 1), round(sell_score, 1), note, {"pnl": perf, "weights": weights, "validated": validation_notes}
+
 
 
 def scan_all_market_signals():
@@ -765,7 +800,7 @@ def scan_all_market_signals():
             _, raw_score, strategy_votes, regime, raw_buys, raw_sells = evaluate_multi_strategy(last_row, bias_value)
             best_side, selected_strategies, active_votes, buy_votes, sell_votes, adaptive_note, _ = adaptive_strategy_selection(
                 strategy_votes, regime, name, tf, st.session_state.get("trades", load_trade_log()))
-            best_score = round(100 * max(buy_votes, sell_votes) / max(len(active_votes), 1))
+            best_score = round(max(buy_votes, sell_votes))
             best_side, ml_prob, ml_note = apply_learning_gate(best_side, last_row, bias_value, best_score, profile)
             signal_value = best_side if best_side in ("BUY", "SELL") else "WAIT"
             rows.append({
@@ -1036,7 +1071,7 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
     _, raw_score, checks, regime, raw_buy_votes, raw_sell_votes = evaluate_multi_strategy(last, bias)
     side, selected_strategies, active_votes, buy_votes, sell_votes, adaptive_note, strategy_perf = adaptive_strategy_selection(
         checks, regime, market_name, timeframe, current_trades)
-    score = round(100 * max(buy_votes, sell_votes) / max(len(active_votes), 1))
+    score = round(max(buy_votes, sell_votes))
     side, ml_probability, ml_note = apply_learning_gate(side, last, bias, score, profile)
     if side in ("BUY", "SELL"):
         events.append(f"Strategy selector: {adaptive_note}; selected: {', '.join(selected_strategies)}. {ml_note}")
