@@ -1,6 +1,7 @@
-AI Brain V7 build checks
-- Python syntax compilation: PASS (app.py, trading_engine/smc.py, trading_engine/strategy_discovery.py)
-- Automated tests: 32 passed
-- ZIP integrity: checked after packaging
-- Trading mode: paper only
-- Note: automated tests do not prove profitability or validate live data-feed availability.
+AI Brain V7 release validation
+- Python syntax compilation: PASS
+- Unit tests: 37 passed with PYTHONPATH=. pytest -q
+- Package structure: app.py and trading_engine/ at ZIP root
+- Cache files excluded
+- Live Streamlit deployment: NOT tested in the user's cloud account
+- Trading mode: paper-trading research only
