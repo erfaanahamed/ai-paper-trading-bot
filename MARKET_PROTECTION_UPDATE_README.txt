@@ -2,7 +2,7 @@ AI BRAIN V7 — MARKET SESSION + WEEKEND PROTECTION UPDATE
 
 Changes in this build:
 - Added a Market Session Protection ON/OFF toggle.
-- Added a configurable pre-close / post-open buffer; default is 30 minutes.
+- Added a configurable pre-close / post-open buffer; default is 60 minutes.
 - Added a Saturday & Sunday: NO TRADING toggle, default ON, covering all symbols including crypto.
 - Blocks new paper entries only; existing simulated positions continue to be managed.
 - Protection status and reason are added to scan events when an entry is blocked.

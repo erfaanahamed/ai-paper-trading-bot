@@ -13,8 +13,8 @@ IMPORTANT: In Streamlit Cloud, set Main file path to app.py (recommended), not t
 Upload/commit the ZIP CONTENTS to the same GitHub branch connected to Streamlit, then reboot the app.
 
 Sidebar controls:
-  30 MIN BEFORE MARKET CLOSE — ON/OFF
-  30 MIN AFTER MARKET OPENS — ON/OFF
+  1 HOUR BEFORE MARKET CLOSE — ON/OFF
+  1 HOUR AFTER MARKET OPENS — ON/OFF
   SATURDAY & SUNDAY — NO TRADING — ON/OFF
 
-The 30-minute controls block new entries only; existing positions continue to be managed. Market hours are approximate and must be checked against the intended broker's schedule. Paper trading only.
+The 60-minute controls block new entries only; existing positions continue to be managed. Market hours are approximate and must be checked against the intended broker's schedule. Paper trading only.

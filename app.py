@@ -205,8 +205,9 @@ def market_entry_protection_status(market_name, now_utc=None):
 
     cfg = MARKETS.get(market_name, {})
     kind = cfg.get("kind", "forex")
-    buffer_minutes = int(st.session_state.get("market_protection_buffer_minutes", 30))
-    buffer_minutes = max(0, min(buffer_minutes, 180))
+    # Strict, fixed protection window requested by the user: 60 minutes.
+    # Do not read a stale Streamlit session-state slider value; it could silently leave this at 30.
+    buffer_minutes = 60
     preclose_on = bool(st.session_state.get("preclose_protection_enabled", True))
     postopen_on = bool(st.session_state.get("postopen_protection_enabled", True))
 
@@ -843,6 +844,19 @@ def make_trade_levels(last, side, risk_pct, rr2):
     return {"entry": entry, "stop": stop, "tp1": tp1, "tp2": tp2, "risk_per_unit": abs(entry-stop)}
 
 
+DEFAULT_ESTIMATED_COST_BPS = 2.0  # illustrative round-trip cost estimate; tune for the venue
+
+def cost_adjusted_breakeven(entry, side, cost_bps=DEFAULT_ESTIMATED_COST_BPS):
+    """Return a conservative per-unit breakeven stop including estimated costs.
+
+    BUY stops sit above entry; SELL stops sit below entry. This is a simplified
+    price-based estimate, not a broker-specific commission/spread model.
+    """
+    entry = float(entry)
+    buffer = abs(entry) * max(0.0, float(cost_bps)) / 10000.0
+    return entry + buffer if str(side).upper() == "BUY" else entry - buffer
+
+
 def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, threshold,
                              risk_pct, rr2, balance, trades_today, max_trades_per_day,
                              daily_start_balance, max_daily_loss_pct, open_positions, allow_new_entries=True):
@@ -903,12 +917,16 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
             partial = ((pos["TP1"]-pos["Entry"]) if side=="BUY" else (pos["Entry"]-pos["TP1"])) * qty * 0.6
             pos["RealizedPnL"] += partial
             pos["TP1_Hit"] = True
-            pos["Stop"] = pos["Entry"]  # move stop to break-even first
+            cost_bps = float(pos.get("EstimatedCostBps", DEFAULT_ESTIMATED_COST_BPS))
+            pos["Stop"] = cost_adjusted_breakeven(pos["Entry"], side, cost_bps)
             pos["TrailExtreme"] = float(bar["High"] if side == "BUY" else bar["Low"])
-            events.append(f"TP1 hit on {market_name}; simulated 60% close and stop moved to break-even.")
-        # After TP1, trail the remaining 40% using 1.5 x ATR. The stop can
-        # only move in the profitable direction and never beyond break-even
-        # into a loss. Apply updated stop from the next scan/candle onward.
+            events.append(
+                f"TP1 hit on {market_name}; simulated 60% close and remaining 40% stop moved "
+                f"to cost-adjusted breakeven {pos['Stop']:.5f} ({cost_bps:.1f} bps estimate)."
+            )
+        # After TP1, trail the remaining 40% using 1.5 x ATR. The stop may
+        # tighten into profit but must never move backward or cross the
+        # cost-adjusted breakeven floor/ceiling.
         if pos["TP1_Hit"] and not tp2_hit:
             atr_value = bar.get("ATR", np.nan)
             if pd.notna(atr_value) and float(atr_value) > 0:
@@ -920,7 +938,8 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
                 distance = 1.5 * float(atr_value)
                 candidate = extreme - distance if side == "BUY" else extreme + distance
                 old_stop = float(pos["Stop"])
-                new_stop = max(old_stop, float(pos["Entry"]), candidate) if side == "BUY" else min(old_stop, float(pos["Entry"]), candidate)
+                breakeven_floor = cost_adjusted_breakeven(pos["Entry"], side, float(pos.get("EstimatedCostBps", DEFAULT_ESTIMATED_COST_BPS)))
+                new_stop = max(old_stop, breakeven_floor, candidate) if side == "BUY" else min(old_stop, breakeven_floor, candidate)
                 if (side == "BUY" and new_stop > old_stop) or (side == "SELL" and new_stop < old_stop):
                     pos["Stop"] = new_stop
                     events.append(f"ATR trailing stop updated for {market_name} to {new_stop:.5f} (1.5 x ATR).")
@@ -1050,6 +1069,7 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
                     "Strategy names": "; ".join([k for k,v in active_votes.items() if v == side]),
                     "Selected strategy set": "; ".join(selected_strategies), "Market regime": regime,
                     "Qty": qty, "RiskBudget": risk_cash, "TP1_Hit": False, "RealizedPnL": 0.0,
+                    "EstimatedCostBps": DEFAULT_ESTIMATED_COST_BPS,
                     **extract_ml_features(last, bias, score, side), "Status": "OPEN"
                 }
                 open_positions.append(pos)
@@ -1195,6 +1215,8 @@ def run_backtest(df, htf, timeframe, htf_timeframe, threshold, risk_pct, rr2, st
         exit_price = None
         exit_time = None
         partial_pnl = 0.0
+        tp1_recorded = False
+        trail_extreme = None
         for j in range(i+1, min(i+97, len(d))):
             bar = d.iloc[j]
             if side == "BUY":
@@ -1208,11 +1230,22 @@ def run_backtest(df, htf, timeframe, htf_timeframe, threshold, risk_pct, rr2, st
             if stop_hit:
                 # Conservative handling: stop wins if both are touched in one bar.
                 exit_price, exit_time, outcome = stop, d.index[j], "SL"
-                pnl = partial_pnl + ((exit_price-entry) if side=="BUY" else (entry-exit_price))*qty*0.4
+                remaining_fraction = 0.4 if tp1_recorded else 1.0
+                pnl = partial_pnl + ((exit_price-entry) if side=="BUY" else (entry-exit_price))*qty*remaining_fraction
                 break
-            if tp1_hit and partial_pnl == 0.0:
+            if tp1_hit and not tp1_recorded:
                 partial_pnl = ((tp1-entry) if side=="BUY" else (entry-tp1))*qty*0.6
-                stop = entry  # simulated break-even after TP1
+                stop = cost_adjusted_breakeven(entry, side, cost_bps)
+                tp1_recorded = True
+                trail_extreme = float(bar["High"] if side == "BUY" else bar["Low"])
+            elif tp1_recorded:
+                atr_value = bar.get("ATR", np.nan)
+                if pd.notna(atr_value) and float(atr_value) > 0:
+                    current_extreme = float(bar["High"] if side == "BUY" else bar["Low"])
+                    trail_extreme = max(trail_extreme, current_extreme) if side == "BUY" else min(trail_extreme, current_extreme)
+                    candidate = trail_extreme - 1.5 * float(atr_value) if side == "BUY" else trail_extreme + 1.5 * float(atr_value)
+                    floor = cost_adjusted_breakeven(entry, side, cost_bps)
+                    stop = max(stop, floor, candidate) if side == "BUY" else min(stop, floor, candidate)
             if tp2_hit:
                 exit_price, exit_time, outcome = tp2, d.index[j], "TP2"
                 pnl = partial_pnl + ((exit_price-entry) if side=="BUY" else (entry-exit_price))*qty*0.4
@@ -1301,29 +1334,25 @@ with st.sidebar:
     st.divider()
     st.subheader("⏰ Market Session Protection")
     st.toggle(
-        "30 MIN BEFORE MARKET CLOSE — ON/OFF",
+        "1 HOUR BEFORE MARKET CLOSE — ON/OFF",
         value=st.session_state.get("preclose_protection_enabled", True),
         key="preclose_protection_enabled",
-        help="ON blocks new entries during the 30 minutes before the estimated market close.",
+        help="ON strictly blocks new entries during the 60 minutes before the configured market close/FX rollover.",
     )
     st.toggle(
-        "30 MIN AFTER MARKET OPENS — ON/OFF",
+        "1 HOUR AFTER MARKET OPENS — ON/OFF",
         value=st.session_state.get("postopen_protection_enabled", True),
         key="postopen_protection_enabled",
-        help="ON blocks new entries during the 30 minutes after the estimated market reopening.",
+        help="ON strictly blocks new entries during the first 60 minutes after the configured market reopening/FX rollover.",
     )
-    st.slider(
-        "Protection buffer (minutes)", 0, 180,
-        int(st.session_state.get("market_protection_buffer_minutes", 30)), 5,
-        key="market_protection_buffer_minutes",
-    )
+    st.info("Protection window is fixed at 60 minutes before close and 60 minutes after reopening. The window cannot be reduced by a stale setting.")
     st.toggle(
         "SATURDAY & SUNDAY — NO TRADING — ON/OFF",
         value=st.session_state.get("weekend_no_trade_enabled", True),
         key="weekend_no_trade_enabled",
         help="ON blocks all new entries on Saturdays and Sundays for every symbol, including crypto. Existing positions continue to be managed.",
     )
-    st.caption("Session hours are approximate, not broker-specific. Check your broker's schedule. These switches block new entries only; they do not close open positions.")
+    st.caption("Session hours are approximate and must be verified against your broker. For each symbol, new entries are blocked for 60 minutes before its configured close/rollover and 60 minutes after reopening. Crypto has no daily close/open; the Saturday/Sunday switch applies to crypto too. These switches block new entries only; they do not close open positions.")
 
 if "starting_balance_applied" not in st.session_state:
     st.session_state.starting_balance_applied = float(STARTING_BALANCE)

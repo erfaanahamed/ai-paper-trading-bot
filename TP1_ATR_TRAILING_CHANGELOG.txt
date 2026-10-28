@@ -5,3 +5,6 @@ TP1 / ATR trailing update
 - InitialStop is preserved separately for trade-history reporting.
 - Paper trading only; ATR trailing distance is a testable starting setting, not an optimized or guaranteed-profitable parameter.
 - The dashboard app manager and shared execution helper were updated. Backtest trailing behavior still needs separate validation before performance claims.
+
+
+Update 2026-10-28: TP1 management now moves the remaining position to cost-adjusted breakeven using a configurable-in-code default estimate of 2.0 basis points, then trails using 1.5 x ATR. BUY stops can only tighten upward; SELL stops can only tighten downward. Backtest now uses the full position size for a stop-out before TP1 and 40% after TP1. This cost estimate is illustrative and should be tuned to the venue; validate with paper trading.
