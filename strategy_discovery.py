@@ -40,6 +40,15 @@ def _candidate_signals(df, name):
         expanding = vol > vol.rolling(50).median()
         signal[(ret > 0) & expanding] = 1
         signal[(ret < 0) & expanding] = -1
+    elif name == "SMC confluence (OB/BOS/CHOCH/FVG/sweep)":
+        # Features must be generated upstream by trading_engine.smc.add_smc_features.
+        ob_retest = pd.to_numeric(df.get("SMC_OB_Retest", pd.Series(0, index=df.index)), errors="coerce").fillna(0)
+        sweep = pd.to_numeric(df.get("SMC_LiquiditySweep", pd.Series(0, index=df.index)), errors="coerce").fillna(0)
+        choch = pd.to_numeric(df.get("SMC_CHOCH", pd.Series(0, index=df.index)), errors="coerce").fillna(0)
+        bos = pd.to_numeric(df.get("SMC_BOS", pd.Series(0, index=df.index)), errors="coerce").fillna(0)
+        fvg = pd.to_numeric(df.get("SMC_FVG", pd.Series(0, index=df.index)), errors="coerce").fillna(0)
+        signal[(ob_retest == 1) | ((sweep == 1) & (choch == 1)) | ((bos == 1) & (fvg == 1) & (pd.to_numeric(df.get("SMC_OB", 0), errors="coerce") == 1))] = 1
+        signal[(ob_retest == -1) | ((sweep == -1) & (choch == -1)) | ((bos == -1) & (fvg == -1) & (pd.to_numeric(df.get("SMC_OB", 0), errors="coerce") == -1))] = -1
     return signal, atr
 
 def discover_strategies(df, cost_bps=2.0, min_validation_trades=8):
@@ -47,7 +56,8 @@ def discover_strategies(df, cost_bps=2.0, min_validation_trades=8):
     if df is None or len(df) < 180 or "Close" not in df:
         return pd.DataFrame()
     candidates = ["Trend EMA 9/21/50", "Mean reversion RSI + Bollinger",
-                  "Breakout 20-bar levels", "Momentum 5-bar", "Volatility expansion"]
+                  "Breakout 20-bar levels", "Momentum 5-bar", "Volatility expansion",
+                  "SMC confluence (OB/BOS/CHOCH/FVG/sweep)"]
     split = int(len(df) * 0.60)
     rows = []
     close = pd.to_numeric(df["Close"], errors="coerce")
