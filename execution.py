@@ -16,6 +16,18 @@ def manage_bar(position,bar):
         return {"action":"PARTIAL","price":tp1,"reason":"tp1","fraction":.6,"position":p}
     tp2_hit=hi>=tp2 if buy else lo<=tp2
     if partial and tp2_hit:return {"action":"CLOSE","price":tp2,"reason":"tp2","fraction":1.0,"position":p}
+    if partial:
+        atr=float(bar.get('ATR',p.get('atr',0)) or 0)
+        if atr>0:
+            extreme_key='trail_extreme'
+            prev=float(p.get(extreme_key, hi if buy else lo))
+            extreme=max(prev,hi) if buy else min(prev,lo)
+            p[extreme_key]=extreme
+            candidate=extreme-1.5*atr if buy else extreme+1.5*atr
+            new_stop=max(stop,entry,candidate) if buy else min(stop,entry,candidate)
+            if (buy and new_stop>stop) or (not buy and new_stop<stop):
+                p['stop']=new_stop;p['Stop']=new_stop
+                return {"action":"TRAIL","price":new_stop,"reason":"atr_trail","position":p}
     if int(p.get('bars_held',p.get('BarsHeld',0)))>=int(p.get('max_bars',48)):return {"action":"CLOSE","price":cl,"reason":"timeout","fraction":1.0,"position":p}
     return {"action":"HOLD","position":p}
 def apply_timeout(position,bars_held,max_bars):

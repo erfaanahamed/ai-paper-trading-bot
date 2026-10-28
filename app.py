@@ -844,8 +844,27 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
             partial = ((pos["TP1"]-pos["Entry"]) if side=="BUY" else (pos["Entry"]-pos["TP1"])) * qty * 0.6
             pos["RealizedPnL"] += partial
             pos["TP1_Hit"] = True
-            pos["Stop"] = pos["Entry"]  # move stop to break-even
+            pos["Stop"] = pos["Entry"]  # move stop to break-even first
+            pos["TrailExtreme"] = float(bar["High"] if side == "BUY" else bar["Low"])
             events.append(f"TP1 hit on {market_name}; simulated 60% close and stop moved to break-even.")
+        # After TP1, trail the remaining 40% using 1.5 x ATR. The stop can
+        # only move in the profitable direction and never beyond break-even
+        # into a loss. Apply updated stop from the next scan/candle onward.
+        if pos["TP1_Hit"] and not tp2_hit:
+            atr_value = bar.get("ATR", np.nan)
+            if pd.notna(atr_value) and float(atr_value) > 0:
+                extreme_key = "TrailExtreme"
+                current_extreme = float(bar["High"] if side == "BUY" else bar["Low"])
+                previous_extreme = float(pos.get(extreme_key, current_extreme))
+                extreme = max(previous_extreme, current_extreme) if side == "BUY" else min(previous_extreme, current_extreme)
+                pos[extreme_key] = extreme
+                distance = 1.5 * float(atr_value)
+                candidate = extreme - distance if side == "BUY" else extreme + distance
+                old_stop = float(pos["Stop"])
+                new_stop = max(old_stop, float(pos["Entry"]), candidate) if side == "BUY" else min(old_stop, float(pos["Entry"]), candidate)
+                if (side == "BUY" and new_stop > old_stop) or (side == "SELL" and new_stop < old_stop):
+                    pos["Stop"] = new_stop
+                    events.append(f"ATR trailing stop updated for {market_name} to {new_stop:.5f} (1.5 x ATR).")
         if tp2_hit:
             qty = pos["Qty"]
             pnl = pos["RealizedPnL"] + ((pos["TP2"]-pos["Entry"]) if side=="BUY" else (pos["Entry"]-pos["TP2"])) * qty * 0.4
@@ -961,7 +980,7 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
                 pos = {
                     "Opened": datetime.now().isoformat(timespec="seconds"), "Market": market_name,
                     "Symbol": symbol, "Timeframe": timeframe, "Side": side, "Score": score,
-                    "Entry": entry, "Stop": stop, "TP1": tp1, "TP2": tp2,
+                    "Entry": entry, "Stop": stop, "InitialStop": stop, "TP1": tp1, "TP2": tp2,
                     "Strategy names": "; ".join([k for k,v in active_votes.items() if v == side]),
                     "Selected strategy set": "; ".join(selected_strategies), "Market regime": regime,
                     "Qty": qty, "RiskBudget": risk_cash, "TP1_Hit": False, "RealizedPnL": 0.0,

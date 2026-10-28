@@ -1,0 +1,7 @@
+TP1 / ATR trailing update
+- After TP1, the simulator records 60% partial profit and moves the remaining position's stop to break-even.
+- After TP1, the remaining position can trail using 1.5 x ATR, following favorable highs (BUY) or lows (SELL).
+- Stop is monotonic: it cannot move backward or below break-even for BUY / above break-even for SELL.
+- InitialStop is preserved separately for trade-history reporting.
+- Paper trading only; ATR trailing distance is a testable starting setting, not an optimized or guaranteed-profitable parameter.
+- The dashboard app manager and shared execution helper were updated. Backtest trailing behavior still needs separate validation before performance claims.
