@@ -754,9 +754,15 @@ def adaptive_strategy_selection(votes, regime, market_name, timeframe, trades):
     sell_score = 100.0 * sell_weight / total_weight
     buy_count = sum(signal == "BUY" for signal in votes.values())
     sell_count = sum(signal == "SELL" for signal in votes.values())
-    if buy_count >= 2 and buy_score >= 60.0 and buy_score > sell_score:
+    # Entry threshold is based on the share of active directional weight, not
+    # the total weight of strategies that did not emit a signal.
+    active_directional_weight = buy_weight + sell_weight
+    buy_support = 100.0 * buy_weight / active_directional_weight if active_directional_weight else 0.0
+    sell_support = 100.0 * sell_weight / active_directional_weight if active_directional_weight else 0.0
+    vote_threshold = 70.0
+    if buy_count >= 2 and buy_support >= vote_threshold and buy_weight > sell_weight:
         side = "BUY"
-    elif sell_count >= 2 and sell_score >= 60.0 and sell_score > buy_score:
+    elif sell_count >= 2 and sell_support >= vote_threshold and sell_weight > buy_weight:
         side = "SELL"
     else:
         side = "WAIT"
@@ -765,8 +771,10 @@ def adaptive_strategy_selection(votes, regime, market_name, timeframe, trades):
     active_votes = dict(votes)
     # Keep every strategy signal visible; selected lists the top three weights.
     # Display vote scores remain percentages, not raw strategy counts.
-    note = ("Walk-forward validated weighted voting" if validation_notes else
-            "Walk-forward warm-up: regime priors used until enough validated outcomes")
+    note = ("Walk-forward weighted voting; 70% active-vote threshold; "
+            f"BUY support {buy_support:.1f}%, SELL support {sell_support:.1f}%" if validation_notes else
+            "Walk-forward warm-up with regime priors; 70% active-vote threshold; "
+            f"BUY support {buy_support:.1f}%, SELL support {sell_support:.1f}%")
     return side, selected, active_votes, round(buy_score, 1), round(sell_score, 1), note, {"pnl": perf, "weights": weights, "validated": validation_notes}
 
 

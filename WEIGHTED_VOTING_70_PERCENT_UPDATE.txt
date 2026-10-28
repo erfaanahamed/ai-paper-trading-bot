@@ -1,0 +1,9 @@
+AI Brain V7 — Weighted Voting Threshold Update
+
+Changes:
+- BUY/SELL entries now require at least two strategies to agree.
+- At least 70% of the active directional weighted votes must support the same side.
+- Support is calculated from BUY + SELL votes that actually emitted a signal; silent strategies no longer dilute the displayed decision threshold.
+- If neither side meets the threshold, the decision is WAIT.
+
+This is a code change, not evidence of profitability. Test on historical data and paper trading before relying on it. The live Streamlit deployment has not been verified.
