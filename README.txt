@@ -66,3 +66,11 @@ V7 OPTIONAL SMC MODULE
 - SMC chart zone lines and a diagnostic panel are available in the selected-market view.
 - Strategy Discovery Lab includes an SMC candidate for chronological validation; it does not auto-promote strategies.
 - SMC definitions are algorithmic heuristics, not proof of institutional orders; paper-test and validate before relying on them.
+
+V8 MARKET SESSION + WEEKEND ENTRY PROTECTION
+- Added market open/close protection with a 30-minute buffer around configured sessions.
+- Added a Streamlit sidebar toggle: "Saturday & Sunday: NO TRADING". It defaults ON and blocks new entries for every configured symbol, including crypto, during Saturday/Sunday. Turn it OFF if you want 24/7 crypto scanning over the weekend.
+- Added a separate "Market open/close protection" toggle, default ON. The 30-minute buffer is fixed in this version.
+- Protections block new scan/entry signals only. They are not intended to stop management of existing positions.
+- Session times are approximations for the Yahoo Finance proxies configured in this project; verify against your intended broker/exchange before relying on them. Crypto has no daily close/open, so only the weekend toggle applies to crypto.
+- Run the dashboard from the project root with: streamlit run app.py

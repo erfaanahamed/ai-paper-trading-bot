@@ -12,6 +12,7 @@ from .labels import triple_barrier_labels
 from .meta import fit_meta_model, save_artifact, load_artifact, predict_win_prob
 from .gates import decide
 from .state import load_state, load_settings, log_audit
+from .market_hours import entry_session_status
 
 log = logging.getLogger(__name__)
 MODEL_DIR = DATA_DIR / "models"
@@ -46,6 +47,14 @@ def scan_all_markets(config=None):
         try:
             if settings.get("paused") or not settings.get("symbol_enabled", {}).get(market, True):
                 events.append({"event":"skip","market":market,"reason":"paused or symbol disabled"}); continue
+            if settings.get("session_protection", True):
+                allowed, session_reason = entry_session_status(
+                    market,
+                    buffer_minutes=int(settings.get("session_buffer_minutes", 30)),
+                    no_weekend_trading=bool(settings.get("no_weekend_trading", True)),
+                )
+                if not allowed:
+                    events.append({"event":"skip","market":market,"reason":session_reason,"action":"WAIT"}); continue
             raw = fetch_ohlcv(item["symbol"], item.get("interval","15m"))
             ok, reason = validate_ohlcv(raw, item.get("interval","15m"))
             if not ok:
