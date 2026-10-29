@@ -1,0 +1,6 @@
+HERMES INTEGRATION UPDATE
+- Included Linux setup helper to install the official Hermes Agent runtime and configure an authenticated localhost API.
+- Added generated API-key setup with restrictive file permissions and backup of any existing Hermes .env file.
+- Clarified Hermes Agent runtime versus Hermes 3 model-family naming; no unsupported claim that the ZIP contains Hermes 3 Alpha weights.
+- Existing dashboard connection test and manual advisory market-review workflow retained.
+- Hermes remains advisory-only; it cannot place orders or override trading protections.

@@ -12,51 +12,33 @@ def evaluate_multi_strategy(last,bias="Unknown"):
         except:return np.nan
     c,o,h,l=n("Close"),n("Open"),n("High"),n("Low"); prev=n("PrevClose"); e9,e21,e50=n("EMA9"),n("EMA21"),n("EMA50"); rsi,adx,pdi,mdi=n("RSI"),n("ADX"),n("PLUS_DI"),n("MINUS_DI"); mid,up,low=n("BB_Mid"),n("BB_Upper"),n("BB_Lower"); sup,res,atr,rv=n("Support"),n("Resistance"),n("ATR"),n("RelVol"); mfi=n("MFI"); ps,pr=n("PrevSupport"),n("PrevResistance")
     v={s:"WAIT" for s in STRATEGIES}
-    # 0 Trend following - loosened ADX + EMA stack
     if all(np.isfinite(x) for x in [e9,e21,e50,pdi,mdi,adx]):
-        if e9>e21>e50 and pdi>mdi and adx>=16 and bias!="Bearish":v[STRATEGIES[0]]="BUY"
-        elif e9<e21<e50 and mdi>pdi and adx>=16 and bias!="Bullish":v[STRATEGIES[0]]="SELL"
-    # 1 Mean reversion - slightly wider RSI / BB
+        if e9>e21>e50 and pdi>mdi and adx>=18 and bias!="Bearish":v[STRATEGIES[0]]="BUY"
+        elif e9<e21<e50 and mdi>pdi and adx>=18 and bias!="Bullish":v[STRATEGIES[0]]="SELL"
     if all(np.isfinite(x) for x in [c,low,up,rsi,adx]):
-        if c<=low and rsi<=32 and adx<30 and (not np.isfinite(mfi) or mfi<35):v[STRATEGIES[1]]="BUY"
-        elif c>=up and rsi>=68 and adx<30 and (not np.isfinite(mfi) or mfi>65):v[STRATEGIES[1]]="SELL"
-    # 2 Breakout
+        if c<=low and rsi<=30 and adx<28 and (not np.isfinite(mfi) or mfi<30):v[STRATEGIES[1]]="BUY"
+        elif c>=up and rsi>=70 and adx<28 and (not np.isfinite(mfi) or mfi>70):v[STRATEGIES[1]]="SELL"
     if all(np.isfinite(x) for x in [c,sup,res,atr]):
-        if c>res and (not np.isfinite(rv) or rv>=1.05):v[STRATEGIES[2]]="BUY"
-        elif c<sup and (not np.isfinite(rv) or rv>=1.05):v[STRATEGIES[2]]="SELL"
-    # 3 Momentum - wider RSI band + DI confirmation
+        if c>res and (not np.isfinite(rv) or rv>=1.1):v[STRATEGIES[2]]="BUY"
+        elif c<sup and (not np.isfinite(rv) or rv>=1.1):v[STRATEGIES[2]]="SELL"
     if all(np.isfinite(x) for x in [c,prev,rsi,pdi,mdi]):
-        if c>prev and 52<=rsi<=80 and pdi>mdi:v[STRATEGIES[3]]="BUY"
-        elif c<prev and 20<=rsi<=48 and mdi>pdi:v[STRATEGIES[3]]="SELL"
-    # 4 Range trading
-    if all(np.isfinite(x) for x in [c,sup,res,adx]) and res>sup and adx<22:
-        if c<=sup+.22*(res-sup):v[STRATEGIES[4]]="BUY"
-        elif c>=res-.22*(res-sup):v[STRATEGIES[4]]="SELL"
-    # 5 Volatility expansion
-    if all(np.isfinite(x) for x in [c,o,h,l,atr]) and atr>0 and h-l>=1.15*atr and c!=o:
-        if c>o and (not np.isfinite(rv) or rv>=0.95):v[STRATEGIES[5]]="BUY"
-        elif c<o and (not np.isfinite(rv) or rv>=0.95):v[STRATEGIES[5]]="SELL"
-    # 6 Price action
+        if c>prev and 55<=rsi<=78 and pdi>mdi:v[STRATEGIES[3]]="BUY"
+        elif c<prev and 22<=rsi<=45 and mdi>pdi:v[STRATEGIES[3]]="SELL"
+    if all(np.isfinite(x) for x in [c,sup,res,adx]) and res>sup and adx<20:
+        if c<=sup+.18*(res-sup):v[STRATEGIES[4]]="BUY"
+        elif c>=res-.18*(res-sup):v[STRATEGIES[4]]="SELL"
+    if all(np.isfinite(x) for x in [c,o,h,l,atr]) and atr>0 and h-l>=1.25*atr and c!=o:
+        if c>o and (not np.isfinite(rv) or rv>=1):v[STRATEGIES[5]]="BUY"
+        elif c<o and (not np.isfinite(rv) or rv>=1):v[STRATEGIES[5]]="SELL"
     if all(np.isfinite(x) for x in [c,o,h,l,e21]) and h>l:
         body=abs(c-o); cp=(c-l)/(h-l)
-        if c>o and body/(h-l)>=.55 and cp>=.75 and c>e21:v[STRATEGIES[6]]="BUY"
-        elif c<o and body/(h-l)>=.55 and cp<=.25 and c<e21:v[STRATEGIES[6]]="SELL"
-    # 7 Liquidity sweep
+        if c>o and body/(h-l)>=.6 and cp>=.8 and c>e21:v[STRATEGIES[6]]="BUY"
+        elif c<o and body/(h-l)>=.6 and cp<=.2 and c<e21:v[STRATEGIES[6]]="SELL"
     if all(np.isfinite(x) for x in [c,h,l,ps,pr]):
         if l<ps and c>ps:v[STRATEGIES[7]]="BUY"
         elif h>pr and c<pr:v[STRATEGIES[7]]="SELL"
-    b=sum(x=="BUY" for x in v.values()); s=sum(x=="SELL" for x in v.values())
-    # Improved decision: require 2+ agreement OR a strong single high-quality strategy in clear regime
-    side = "WAIT"
-    if b>=2 and b>s:
-        side = "BUY"
-    elif s>=2 and s>b:
-        side = "SELL"
-    elif b==1 and s==0 and v.get(STRATEGIES[0])=="BUY" and adx is not None and adx>=22:
-        side = "BUY"   # strong trend only
-    elif s==1 and b==0 and v.get(STRATEGIES[0])=="SELL" and adx is not None and adx>=22:
-        side = "SELL"
-    return side,int(round(100*max(b,s)/max(1,len(v)))),v,_regime(last),b,s
+    b=sum(x=="BUY" for x in v.values()); s=sum(x=="SELL" for x in v.values()); side="BUY" if b>=2 and b>s else "SELL" if s>=2 and s>b else "WAIT"
+    return side,int(round(100*max(b,s)/len(v))),v,_regime(last),b,s
 def adaptive_strategy_selection(votes,regime,market_name,timeframe,history):
     """Walk-forward-validated weighted voting from completed trade history.
 

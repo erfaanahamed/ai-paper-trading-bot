@@ -1,0 +1,42 @@
+AI BRAIN V7 + HERMES AGENT — INTEGRATED SETUP
+
+WHAT IS INCLUDED
+- Streamlit sidebar fields for Hermes API URL, API key and model alias.
+- Connection test and an on-demand Hermes analysis of scanner rows and recent paper-trade records.
+- A Linux helper script: setup_hermes_agent_linux.sh. It installs the official Hermes Agent runtime, generates a strong API key, and enables the local API server.
+- The bot sends a compact dashboard snapshot only when you click Analyze with Hermes.
+
+IMPORTANT DISTINCTION
+Hermes Agent is an agent runtime; Hermes 3 is a family of language models. This ZIP integrates AI Brain with the Hermes Agent API. It does not bundle the Hermes runtime, proprietary model weights, provider credentials, or a guaranteed specific "Hermes 3 Alpha" model. Model/provider availability depends on your Hermes configuration. If you specifically mean a model named Hermes 3 Alpha, select/configure that model in a supported provider and use its correct route/model name; do not assume the default alias `hermes-agent` means Hermes 3 Alpha.
+
+LINUX VPS INSTALLATION (recommended)
+1. Extract the ZIP on the same Linux VPS that runs AI Brain.
+2. From the extracted directory run:
+     bash setup_hermes_agent_linux.sh
+3. Complete the interactive provider/model setup shown by the script. A provider subscription/API key may be required.
+4. Start the Hermes gateway:
+     hermes gateway
+   Keep it running with your normal process manager (systemd, supervisor, tmux, etc.).
+5. Install AI Brain dependencies and start the dashboard:
+     pip install -r requirements.txt
+     streamlit run app.py
+6. In the AI Brain sidebar, set:
+     Hermes API base URL: http://127.0.0.1:8642/v1
+     Hermes API key: the generated key printed by the setup script
+     Hermes model name: hermes-agent
+7. Click Test Hermes connection, then Analyze current dashboard with Hermes.
+
+MANUAL INSTALLATION
+Use the official Hermes Agent instructions:
+https://hermes-agent.nousresearch.com/docs/getting-started/installation/
+API server guide:
+https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server
+Enable API_SERVER_ENABLED=true and set a long random API_SERVER_KEY in ~/.hermes/.env. Keep the server bound to localhost unless you have configured private networking/TLS and firewall rules.
+
+SAFETY / LIMITATIONS
+- Hermes reviews the dashboard; it does not directly change signal votes, weights, stop-losses, or execute orders.
+- No live broker connection is added. This package remains a paper-trading research app.
+- Do not expose port 8642 publicly without proper network controls and TLS.
+- Keep keys private and never commit ~/.hermes/.env to source control.
+- Hermes/model calls may incur provider costs.
+- A connection test is not proof of profitable performance. Evaluate the trading strategy with out-of-sample paper trading and account for spread, commission, slippage, and data quality.

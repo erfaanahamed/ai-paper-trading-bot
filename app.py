@@ -10,6 +10,7 @@ from streamlit_autorefresh import st_autorefresh
 import json
 from pathlib import Path
 import requests
+from hermes_integration import analyze_with_hermes, hermes_connection_test
 try:
     from trading_engine.adaptive_learning import update_model as update_adaptive_model, learning_diagnostics
     from trading_engine.strategy_discovery import discover_strategies
@@ -1375,6 +1376,37 @@ with st.sidebar:
         st.session_state.settings_rr2_applied = rr2
         st.success("Settings confirmed for this session.")
     st.caption("The multi-strategy engine evaluates trend, mean reversion, breakout, momentum, range, volatility expansion, price action and optional SMC confluence. Entries are simulated paper trades only.")
+    st.divider()
+    st.subheader("🤖 Hermes Agent connection")
+    st.caption("Connect this dashboard to a separately installed Hermes Agent API. Hermes gives advisory analysis only; it cannot place trades.")
+    st.text_input(
+        "Hermes API base URL",
+        value=st.session_state.get("hermes_api_base_url", "http://127.0.0.1:8642/v1"),
+        key="hermes_api_base_url",
+        help="Use the Hermes API URL reachable from this Streamlit server, ending in /v1. For a remote VPS, use its private/TLS-protected URL."
+    )
+    st.text_input(
+        "Hermes API key",
+        value=st.session_state.get("hermes_api_key", ""),
+        type="password",
+        key="hermes_api_key",
+        help="Must match API_SERVER_KEY configured for Hermes. Do not share this key."
+    )
+    st.text_input(
+        "Hermes model name",
+        value=st.session_state.get("hermes_model_name", "hermes-agent"),
+        key="hermes_model_name",
+        help="Usually hermes-agent for the Hermes Agent API server."
+    )
+    if st.button("Test Hermes connection", use_container_width=True, key="test_hermes_connection"):
+        _ok, _message = hermes_connection_test(
+            st.session_state.get("hermes_api_base_url", ""),
+            st.session_state.get("hermes_api_key", ""),
+            st.session_state.get("hermes_model_name", "hermes-agent"),
+        )
+        (st.success if _ok else st.error)(_message)
+    st.caption("Hermes must be installed and configured separately on the same server or a reachable secured host. This integration is OFF until you click Analyze with Hermes.")
+
     st.subheader("🧩 Optional Smart Money Concepts")
     st.checkbox("Use SMC confluence in decisions", value=st.session_state.get("smc_enabled", True), key="smc_enabled", help="SMC is optional; other strategy families remain eligible when there is no SMC setup.")
     st.caption("SMC detects heuristic Order Blocks, BOS, CHOCH, Fair Value Gaps and liquidity sweeps from candle OHLC data.")
@@ -1503,6 +1535,44 @@ if not overview.empty:
     st.caption(f"Markets with usable data: {usable}/{len(overview)}. Provider data may be delayed or unavailable for some symbols.")
 else:
     st.warning("No market scan results are available yet.")
+
+st.divider()
+st.subheader("🧠 Hermes AI market review")
+st.caption("Manual, on-demand review of the latest scanner output and recent paper-trade outcomes. Hermes output is commentary, not a trading signal guarantee.")
+if st.button("Analyze current dashboard with Hermes", type="primary", key="analyze_with_hermes"):
+    _api_base = str(st.session_state.get("hermes_api_base_url", "")).strip()
+    _api_key = str(st.session_state.get("hermes_api_key", "")).strip()
+    _model = str(st.session_state.get("hermes_model_name", "hermes-agent")).strip() or "hermes-agent"
+    if not _api_base or not _api_key:
+        st.error("Enter the Hermes API base URL and API key in the sidebar first.")
+    else:
+        _scan_records = []
+        if isinstance(overview, pd.DataFrame) and not overview.empty:
+            _scan_records = overview.replace({np.nan: None}).to_dict(orient="records")
+        _recent_trades = []
+        _trade_frame = pd.DataFrame(st.session_state.get("trades", []))
+        if not _trade_frame.empty:
+            _recent_trades = _trade_frame.tail(15).replace({np.nan: None}).to_dict(orient="records")
+        with st.spinner("Hermes is reviewing the latest scanner and paper-trade summary..."):
+            _ok, _result = analyze_with_hermes(
+                _api_base, _api_key, _model, _scan_records, _recent_trades,
+                timeout_seconds=45,
+            )
+        if _ok:
+            st.session_state["hermes_last_analysis"] = _result
+            st.session_state["hermes_last_analysis_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            st.error(_result)
+if st.session_state.get("hermes_last_analysis"):
+    st.markdown(f"**Last Hermes review:** {st.session_state.get('hermes_last_analysis_time', 'time unavailable')}")
+    st.markdown(st.session_state["hermes_last_analysis"])
+    st.download_button(
+        "Download Hermes review",
+        data=st.session_state["hermes_last_analysis"],
+        file_name="hermes_market_review.txt",
+        mime="text/plain",
+        key="download_hermes_review",
+    )
 
 with st.expander("🎛️ Per-symbol automatic trading switches", expanded=True):
     st.caption("Turn a symbol OFF to prevent new paper entries on that market. Existing open positions will continue to be managed for stop-loss/targets.")

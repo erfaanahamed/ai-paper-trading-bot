@@ -66,3 +66,19 @@ V7 OPTIONAL SMC MODULE
 - SMC chart zone lines and a diagnostic panel are available in the selected-market view.
 - Strategy Discovery Lab includes an SMC candidate for chronological validation; it does not auto-promote strategies.
 - SMC definitions are algorithmic heuristics, not proof of institutional orders; paper-test and validate before relying on them.
+
+
+HERMES AGENT INTEGRATION (OPTIONAL):
+- This build includes a manual Hermes Agent connector in the Streamlit dashboard.
+- Hermes is a separate agent runtime; it is not bundled inside this ZIP. Install/configure Hermes on the same host or a secured reachable host.
+- On the Hermes host, complete Hermes setup, then enable its OpenAI-compatible API server in ~/.hermes/.env:
+    API_SERVER_ENABLED=true
+    API_SERVER_KEY=replace-with-a-long-random-secret
+  Start/restart the Hermes gateway using the current official Hermes instructions. The API commonly listens on http://127.0.0.1:8642.
+- If Hermes and Streamlit run on different hosts, bind/expose the API only through a private network or HTTPS reverse proxy with authentication. Do NOT expose port 8642 publicly without proper security.
+- In the AI Brain sidebar, set the Hermes API base URL (ending in /v1), enter the same API key, and keep model name as hermes-agent unless your setup specifies otherwise. Click Test Hermes connection.
+- Click "Analyze current dashboard with Hermes" to request an on-demand review of the current scanner rows and up to 15 recent paper-trade records.
+- This is an advisory/research integration only. Hermes output does NOT change votes, signals, risk controls, or paper orders. No live broker execution has been added.
+- API calls may incur model/provider costs and the review can take several seconds. No Hermes call is made on each automatic dashboard refresh.
+- The bot continues to work without Hermes if the integration is unused. Existing paper-trading functions are unchanged.
+- Official docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server/
