@@ -13,3 +13,5 @@
 {"timestamp": "2026-10-28T14:38:23.779979+00:00", "event_type": "market_scan", "details": {"events": 10, "qualified": 0}}
 {"timestamp": "2026-10-28T21:13:47.668190+00:00", "event_type": "market_scan", "details": {"events": 10, "qualified": 0}}
 {"timestamp": "2026-10-28T21:41:59.301736+00:00", "event_type": "market_scan", "details": {"events": 10, "qualified": 0}}
+{"timestamp": "2026-10-28T22:51:51.507320+00:00", "event_type": "market_scan", "details": {"events": 10, "qualified": 0}}
+{"timestamp": "2026-10-28T22:52:08.157952+00:00", "event_type": "market_scan", "details": {"events": 10, "qualified": 0}}

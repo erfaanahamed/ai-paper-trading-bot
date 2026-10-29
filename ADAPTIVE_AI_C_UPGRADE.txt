@@ -1,0 +1,18 @@
+AI BRAIN V7 — OPTION C ADAPTIVE LEARNING UPGRADE
+
+Added:
+- Completed paper-trade loss-pattern diagnostics grouped by market, market regime, side, timeframe and attributed strategy.
+- Minimum sample guards: at least 300 completed feature-rich trades, at least 50 wins and 50 losses before training a new trade-outcome model.
+- Chronological 70/30 holdout validation; candidate must reach AUC >= 0.53.
+- Candidate rejection if it fails the AUC gate or scores more than 0.02 below the current validated champion.
+- Atomic model writes and a last-known-good model artifact before promotion.
+- Model artifact reuse when the completed-trade dataset has not changed, avoiding retraining on every dashboard refresh.
+- Dashboard metrics for holdout AUC/Brier score, repeat-loss diagnostics and strategy-discovery candidates.
+- Candidate strategy discovery remains research-only; no strategy is activated from a small sample or one loss.
+
+Safety and limitations:
+- Paper trading only. No broker, wallet, or live-order routing was added.
+- The AI does not guarantee profit and cannot eliminate all losing trades.
+- AUC >= 0.53 is a minimum research gate, not proof of profitable expectancy. Brier score, net expectancy, drawdown, costs and regime stability must also be monitored.
+- The candidate model is validated on a chronological holdout; more rigorous purged walk-forward validation across multiple regimes is still recommended before real-money use.
+- Trade-history feature coverage and accurate closed-trade P&L are required for learning.

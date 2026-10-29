@@ -9,14 +9,15 @@ python -m trading_engine.main_worker
 For the original dashboard: `streamlit run app.py`
 For the research viewer: `streamlit run trading_engine/app.py`
 
-## Hybrid scan path
-Raw OHLCV -> causal indicator builder -> rule ensemble -> feature builder -> historical triple-barrier labels -> calibrated classifier with purged walk-forward evaluation -> probability and estimated net-expectancy gate -> BUY/SELL eligibility or WAIT/SKIP.
+## Adaptive learning
+The dashboard learns from completed paper trades only. It records trade outcomes and summarizes repeated loss patterns by market, regime, side, timeframe and strategy. These are investigation flags, not proof of causation and not a reason to disable a strategy from a few trades.
 
-A model is eligible only if the current trainer has sufficient examples and its walk-forward AUC is at least 0.53. This is a research guardrail, not evidence of profitability by itself. Costs are approximate, Yahoo Finance data may be delayed or incomplete, and fills/position orchestration remain simplified.
+A new trade-outcome model requires at least 300 completed feature-rich trades and at least 50 wins and 50 losses. A candidate is evaluated on a chronological holdout (last 30%); it must reach AUC >= 0.53 and cannot replace a validated model if its holdout AUC is more than 0.02 worse. Model writes are atomic and a last-known-good artifact is saved before promotion. If the candidate fails, the current validated model is retained.
 
-## Important limitations
-- The current scan trains a model when no qualifying saved model exists; it does not yet run a scheduled retraining lifecycle or automatically update from every completed paper trade.
-- Full open-position management and end-to-end paper execution are not yet integrated into this scan loop.
-- Indicator-based signals may be sparse. If no model qualifies, the safe decision is WAIT/SKIP.
-- Yahoo futures/FX/crypto symbols are proxies and can differ from broker instruments.
-- No broker/wallet integration or live trading. No profit or win-rate guarantee.
+Strategy discovery reports candidate research results but does not automatically activate candidates from one run. Existing weighted voting and regime-based strategy selection remain in place.
+
+## Research path
+Raw OHLCV -> causal indicators -> rule ensemble -> features -> historical labels -> calibrated classifier with purged walk-forward evaluation -> probability and estimated net-expectancy gate -> BUY/SELL eligibility or WAIT/SKIP.
+
+## Limitations
+AUC and win probability are not profitability guarantees. Keep evaluating net returns after costs, profit factor, drawdown, calibration and performance across unseen regimes. Data vendors may be delayed or incomplete, symbol proxies may differ from broker instruments, and simulated fills simplify real execution. No broker/wallet integration or live trading is included.

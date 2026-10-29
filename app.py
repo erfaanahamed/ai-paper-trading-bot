@@ -10,6 +10,13 @@ from streamlit_autorefresh import st_autorefresh
 import json
 from pathlib import Path
 import requests
+try:
+    from trading_engine.adaptive_learning import update_model as update_adaptive_model, learning_diagnostics
+    from trading_engine.strategy_discovery import discover_strategies
+except Exception:
+    update_adaptive_model = None
+    learning_diagnostics = None
+    discover_strategies = None
 # Standalone-first SMC import: the main app.py contains the full application and
 # must not require importing trading_engine.app. Prefer the root-level smc.py so
 # deployments still start even if GitHub's upload omitted the package directory.
@@ -417,8 +424,8 @@ ML_FEATURES = [
     "ML_ATR_Pct", "ML_VWAP_Gap_Pct", "ML_RelVol", "ML_MFI",
     "ML_Score", "ML_HTF_Bull", "ML_HTF_Bear", "ML_IsBuy",
 ]
-MIN_ML_TRADES = 30
-LEARNING_MODEL_VERSION = "logistic-v1"
+MIN_ML_TRADES = 300
+LEARNING_MODEL_VERSION = "adaptive-paper-v1"
 
 
 def extract_ml_features(last, bias, score, side):
@@ -472,40 +479,57 @@ def _closed_learning_rows(trades):
 
 
 def learning_profile(trades):
-    """Return conservative learned confirmation setting and an optional trained ML model."""
+    """Build a conservative learning profile from completed paper trades only.
+
+    Model promotion requires at least 300 completed feature-rich trades, at least
+    50 wins and 50 losses, and chronological holdout AUC >= 0.53. A previously
+    validated model remains active if a new candidate fails validation.
+    """
     rows = _closed_learning_rows(trades)
     profile = {"closed_samples": int(len(rows)), "recent_win_rate": None,
                "min_confirmations": 6, "model": None, "model_ready": False,
-               "model_note": "Collecting completed paper trades with entry features."}
+               "model_note": "Collecting completed paper trades with entry features.",
+               "learning_diagnostics": None, "model_auc": None, "model_brier": None,
+               "model_status": "COLLECTING"}
     if len(rows):
         recent = rows.tail(20)
         win_rate = float(recent["_label"].mean())
         profile["recent_win_rate"] = win_rate
-        # A small, bounded adjustment: tighten after poor recent results; relax only slightly after good results.
         if len(recent) >= 10 and win_rate < 0.40:
             profile["min_confirmations"] = 7
         elif len(recent) >= 10 and win_rate > 0.65:
             profile["min_confirmations"] = 5
+
+    if learning_diagnostics is not None:
+        try:
+            profile["learning_diagnostics"] = learning_diagnostics(trades)
+        except Exception:
+            profile["learning_diagnostics"] = None
+
     if not SKLEARN_AVAILABLE:
-        profile["model_note"] = "scikit-learn is not installed; adaptive rule analysis is active, ML is disabled."
+        profile["model_note"] = "scikit-learn is not installed; rule analysis remains active and ML is disabled."
         return profile
-    if len(rows) < MIN_ML_TRADES or rows["_label"].nunique() < 2 or rows["_label"].value_counts().min() < 8:
-        profile["model_note"] = f"ML needs at least {MIN_ML_TRADES} completed feature-rich trades and at least 8 wins and 8 losses."
-        return profile
-    try:
-        x = rows[ML_FEATURES].apply(pd.to_numeric, errors="coerce")
-        y = rows["_label"].astype(int)
-        model = Pipeline([
-            ("imputer", SimpleImputer(strategy="median")),
-            ("scale", StandardScaler()),
-            ("classifier", LogisticRegression(max_iter=1000, class_weight="balanced", random_state=42)),
-        ])
-        model.fit(x, y)
-        profile["model"] = model
-        profile["model_ready"] = True
-        profile["model_note"] = f"ML model trained on {len(rows)} completed trades ({int(y.sum())} wins, {int((1-y).sum())} losses)."
-    except Exception as exc:
-        profile["model_note"] = f"ML training unavailable: {str(exc)[:100]}"
+
+    if update_adaptive_model is not None:
+        try:
+            model_path = Path("trading_engine_data/models/paper_trade_meta_model.pkl")
+            result = update_adaptive_model(trades, ML_FEATURES, model_path)
+            profile["model"] = result.get("model")
+            profile["model_ready"] = result.get("model") is not None
+            profile["model_status"] = str(result.get("status", "COLLECTING")).upper()
+            profile["model_auc"] = result.get("auc")
+            profile["model_brier"] = result.get("brier")
+            if result.get("model_ready"):
+                profile["model_ready"] = True
+            profile["model_note"] = result.get("reason", "Adaptive model status unavailable.")
+            if profile["model_ready"]:
+                profile["model_note"] += " A previously validated champion is retained if a candidate fails."
+            return profile
+        except Exception as exc:
+            profile["model_note"] = f"Adaptive model update failed safely; rule-based signal retained: {str(exc)[:120]}"
+            return profile
+
+    profile["model_note"] = "Adaptive learning module unavailable; rule-based signal remains active."
     return profile
 
 
@@ -1609,9 +1633,35 @@ with st.expander("🧠 Self-learning engine — trade outcomes + machine learnin
     l3.metric("ML model", "TRAINED" if learning["model_ready"] else "COLLECTING DATA")
     st.write(learning["model_note"])
     st.write(f"Adaptive rule confirmations: {learning['min_confirmations']} of 10 checks.")
+    score_cols = st.columns(2)
+    score_cols[0].metric("Chronological holdout AUC", f"{learning['model_auc']:.3f}" if learning.get("model_auc") is not None and pd.notna(learning.get("model_auc")) else "Not qualified")
+    score_cols[1].metric("Holdout Brier score", f"{learning['model_brier']:.3f}" if learning.get("model_brier") is not None and pd.notna(learning.get("model_brier")) else "Not available")
+    diag = learning.get("learning_diagnostics")
+    if diag and diag.get("groups"):
+        st.markdown("**Repeated-loss pattern review**")
+        flagged = [g for g in diag["groups"] if g.get("pattern_flag")]
+        if flagged:
+            st.dataframe(pd.DataFrame(flagged)[["dimension", "group", "trades", "win_rate", "expectancy", "action"]], use_container_width=True, hide_index=True)
+        else:
+            st.info("No repeated-loss pattern passed the minimum sample review yet.")
+        st.caption(diag.get("warning", "Pattern analysis is advisory only."))
     if ml_probability is not None:
         st.write(f"Current setup estimated win probability: {ml_probability:.1%}.")
-    st.caption("The model learns only from completed paper trades that contain entry features. Before enough examples exist, the bot transparently falls back to rule-based signals. Probabilities are estimates, not guarantees.")
+    st.caption("Adaptive learning uses completed paper trades only. A model needs at least 300 trades, at least 50 wins and 50 losses, and chronological holdout AUC ≥ 0.53. Candidate models that fail validation are not promoted. Probabilities are estimates, not guarantees.")
+
+with st.expander("🔬 Controlled strategy discovery — research candidates", expanded=False):
+    if discover_strategies is None:
+        st.info("Strategy-discovery module is unavailable; active strategies are unchanged.")
+    else:
+        try:
+            candidate_report = discover_strategies(data, cost_bps=2.0, min_validation_trades=8)
+            if candidate_report is None or candidate_report.empty:
+                st.info("Not enough clean market history or validation trades to rank candidate strategies yet.")
+            else:
+                st.dataframe(candidate_report, use_container_width=True, hide_index=True)
+                st.caption("Discovery evaluates candidates on a chronological validation segment. It is research-only: a candidate is not automatically activated from one report, and all estimates are approximate after-cost simulations.")
+        except Exception as exc:
+            st.info(f"Candidate research skipped safely: {str(exc)[:120]}")
 
 if st.session_state.halted:
     st.error("Paper bot is halted by the daily loss control. It will reset on the next calendar day.")

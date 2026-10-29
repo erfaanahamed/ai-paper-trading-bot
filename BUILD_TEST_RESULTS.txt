@@ -1,6 +1,8 @@
-AI Brain V7 build checks
-- Python syntax compilation: PASS (app.py, trading_engine/smc.py, trading_engine/strategy_discovery.py)
-- Automated tests: 32 passed
-- ZIP integrity: checked after packaging
-- Trading mode: paper only
-- Note: automated tests do not prove profitability or validate live data-feed availability.
+AI Brain V7 adaptive learning build checks
+- Python syntax compilation: PASS (app.py and trading_engine package)
+- Automated tests: 35 passed
+- Adaptive learning tests: repeated-loss diagnostic and minimum sample guard passed
+- Model promotion uses chronological holdout AUC >= 0.53 and sample/class-count gates
+- Model persistence: atomic writes; last-known-good artifact preserved before promotion
+- Trading mode: paper only; no broker/wallet/live order routing
+- Important: tests validate software behavior, not trading profitability or future market performance.
