@@ -10,7 +10,6 @@ from streamlit_autorefresh import st_autorefresh
 import json
 from pathlib import Path
 import requests
-from hermes_integration import analyze_with_hermes, hermes_connection_test
 try:
     from trading_engine.adaptive_learning import update_model as update_adaptive_model, learning_diagnostics
     from trading_engine.strategy_discovery import discover_strategies
@@ -161,18 +160,22 @@ st.set_page_config(page_title="AI Paper Trading Brain", page_icon="🧠", layout
 # -----------------------------
 STARTING_BALANCE = 100.0  # USD-denominated virtual starting balance
 MARKETS = {
-    "Gold (XAUUSD)": {"symbol": "GC=F", "signal_tf": "5m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "30m", "kind": "gold"},
-    "XAGUSD Silver (futures proxy)": {"symbol": "SI=F", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "30m", "kind": "silver"},
-    "Crude Oil (WTI proxy)": {"symbol": "CL=F", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "30m", "kind": "oil"},
-    "EUR/USD": {"symbol": "EURUSD=X", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "30m", "kind": "forex"},
-    "GBP/USD": {"symbol": "GBPUSD=X", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "30m", "kind": "forex"},
-    "AUD/USD": {"symbol": "AUDUSD=X", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "30m", "kind": "forex"},
-    "USD/JPY": {"symbol": "JPY=X", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "30m", "kind": "forex"},
-    "BTC/USD": {"symbol": "BTC-USD", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "30m", "kind": "crypto"},
-    "SOL/USD": {"symbol": "SOL-USD", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "30m", "kind": "crypto"},
-    "ETH/USD": {"symbol": "ETH-USD", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "30m", "kind": "crypto"},
+    "Gold (XAUUSD)": {"symbol": "GC=F", "signal_tf": "5m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "1h", "kind": "gold"},
+    "XAGUSD Silver (futures proxy)": {"symbol": "SI=F", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "1h", "kind": "silver"},
+    "Crude Oil (WTI proxy)": {"symbol": "CL=F", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "1h", "kind": "oil"},
+    "EUR/USD": {"symbol": "EURUSD=X", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "1h", "kind": "forex"},
+    "GBP/USD": {"symbol": "GBPUSD=X", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "1h", "kind": "forex"},
+    "AUD/USD": {"symbol": "AUDUSD=X", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "1h", "kind": "forex"},
+    "USD/JPY": {"symbol": "JPY=X", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "1h", "kind": "forex"},
+    "BTC/USD": {"symbol": "BTC-USD", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "1h", "kind": "crypto"},
+    "SOL/USD": {"symbol": "SOL-USD", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "1h", "kind": "crypto"},
+    "ETH/USD": {"symbol": "ETH-USD", "signal_tf": "15m", "allowed_tfs": ["5m", "15m", "30m"], "htf": "1h", "kind": "crypto"},
 }
-INTERVAL_MAP = {"5m": ("5m", "5d"), "15m": ("15m", "60d"), "30m": ("30m", "60d")}
+INTERVAL_MAP = {"5m": ("5m", "5d"), "15m": ("15m", "60d"), "30m": ("30m", "60d"), "1h": ("1h", "60d")}
+
+# Agreed global safety settings. Confidence is directional vote alignment, not a calibrated win probability.
+MIN_CONFIDENCE_SCORE = 70
+MAX_GLOBAL_OPEN_POSITIONS = 5
 
 
 TRADE_LOG_PATH = Path("paper_trade_history.csv")
@@ -385,7 +388,7 @@ def add_indicators(df):
 
 def adaptive_lookback(interval):
     """Choose a support/resistance and power-channel lookback by chart timeframe."""
-    return {"5m": 48, "15m": 40, "30m": 36}.get(interval, 40)
+    return {"5m": 48, "15m": 40, "30m": 36, "1h": 30}.get(interval, 40)
 
 def add_adaptive_levels(df, interval):
     """Calculate rolling swing levels and an adaptive power channel for the selected timeframe."""
@@ -1093,11 +1096,20 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
         st.session_state.auto_last_processed = processed
         return balance, trades_today, daily_start_balance, open_positions, events, "Existing positions checked; this candle was already evaluated for entry."
 
-    if any(p["Market"] == market_name for p in open_positions):
-        events.append("An open simulated position already exists for this market; no duplicate entry.")
+    # Global duplicate guard: only one open position per market across all timeframes/agents.
+    if any(p.get("Market") == market_name and p.get("Status", "OPEN") == "OPEN" for p in open_positions):
+        events.append("An open simulated position already exists for this market across timeframes; duplicate entry blocked.")
         processed[market_key] = bar_time
         st.session_state.auto_last_processed = processed
         return balance, trades_today, daily_start_balance, open_positions, events, "Position already open for this market."
+
+    # Global cap is across every configured market and timeframe, not per symbol.
+    global_open_count = sum(1 for p in open_positions if p.get("Status", "OPEN") == "OPEN")
+    if global_open_count >= MAX_GLOBAL_OPEN_POSITIONS:
+        events.append(f"Global open-position cap reached ({MAX_GLOBAL_OPEN_POSITIONS}); no new position opened.")
+        processed[market_key] = bar_time
+        st.session_state.auto_last_processed = processed
+        return balance, trades_today, daily_start_balance, open_positions, events, "Global open-position cap reached."
 
     current_trades = st.session_state.get("trades", load_trade_log())
     profile = learning_profile(current_trades)
@@ -1105,7 +1117,12 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
     side, selected_strategies, active_votes, buy_votes, sell_votes, adaptive_note, strategy_perf = adaptive_strategy_selection(
         checks, regime, market_name, timeframe, current_trades)
     score = round(max(buy_votes, sell_votes))
-    side, ml_probability, ml_note = apply_learning_gate(side, last, bias, score, profile)
+    if side in ("BUY", "SELL") and score < MIN_CONFIDENCE_SCORE:
+        side, ml_probability = "WAIT", None
+        ml_note = (f"Confidence filter blocked setup ({score}% directional vote alignment; "
+                   f"minimum {MIN_CONFIDENCE_SCORE}%). This score is not a calibrated win probability.")
+    else:
+        side, ml_probability, ml_note = apply_learning_gate(side, last, bias, score, profile)
     if side in ("BUY", "SELL"):
         events.append(f"Strategy selector: {adaptive_note}; selected: {', '.join(selected_strategies)}. {ml_note}")
         levels = make_trade_levels(last, side, risk_pct, rr2)
@@ -1132,7 +1149,7 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
                     return balance, trades_today, daily_start_balance, open_positions, events, "Invalid trade levels rejected."
                 pos = {
                     "Opened": datetime.now().isoformat(timespec="seconds"), "Market": market_name,
-                    "Symbol": symbol, "Timeframe": timeframe, "Side": side, "Score": score,
+                    "Symbol": symbol, "Timeframe": timeframe, "Side": side, "Score": score, "ConfidenceScore": score,
                     "Entry": entry, "Stop": stop, "InitialStop": stop, "TP1": tp1, "TP2": tp2,
                     "Strategy names": "; ".join([k for k,v in active_votes.items() if v == side]),
                     "Selected strategy set": "; ".join(selected_strategies), "Market regime": regime,
@@ -1350,7 +1367,9 @@ with st.sidebar:
         current_tf = st.session_state.get("settings_signal_tf")
         tf_index = allowed_tfs.index(current_tf) if current_tf in allowed_tfs else allowed_tfs.index(default_tf)
         signal_tf = st.selectbox("Signal timeframe", allowed_tfs, index=tf_index, key="settings_signal_tf_widget")
-        htf_tf = st.selectbox("Higher-timeframe filter", ["5m", "15m", "30m"], index=1, key="settings_htf_tf")
+        htf_options = ["15m", "30m", "1h"]
+        htf_default_index = htf_options.index("1h")
+        htf_tf = st.selectbox("Higher-timeframe filter", htf_options, index=htf_default_index, key="settings_htf_tf")
         score_threshold = st.slider("Minimum Signal strength", 50, 95, 70, 1, key="settings_score_threshold")
         risk_pct = st.slider("Risk per trade (%)", 0.25, 1.0, 0.5, 0.25, key="settings_risk_pct")
         max_daily_loss = st.slider("Daily loss stop (%)", 1.0, 3.0, 2.0, 0.5, key="settings_max_daily_loss")
@@ -1375,38 +1394,7 @@ with st.sidebar:
         st.session_state.settings_max_trades_per_day_applied = max_trades_per_day
         st.session_state.settings_rr2_applied = rr2
         st.success("Settings confirmed for this session.")
-    st.caption("The multi-strategy engine evaluates trend, mean reversion, breakout, momentum, range, volatility expansion, price action and optional SMC confluence. Entries are simulated paper trades only.")
-    st.divider()
-    st.subheader("🤖 Hermes Agent connection")
-    st.caption("Connect this dashboard to a separately installed Hermes Agent API. Hermes gives advisory analysis only; it cannot place trades.")
-    st.text_input(
-        "Hermes API base URL",
-        value=st.session_state.get("hermes_api_base_url", "http://127.0.0.1:8642/v1"),
-        key="hermes_api_base_url",
-        help="Use the Hermes API URL reachable from this Streamlit server, ending in /v1. For a remote VPS, use its private/TLS-protected URL."
-    )
-    st.text_input(
-        "Hermes API key",
-        value=st.session_state.get("hermes_api_key", ""),
-        type="password",
-        key="hermes_api_key",
-        help="Must match API_SERVER_KEY configured for Hermes. Do not share this key."
-    )
-    st.text_input(
-        "Hermes model name",
-        value=st.session_state.get("hermes_model_name", "hermes-agent"),
-        key="hermes_model_name",
-        help="Usually hermes-agent for the Hermes Agent API server."
-    )
-    if st.button("Test Hermes connection", use_container_width=True, key="test_hermes_connection"):
-        _ok, _message = hermes_connection_test(
-            st.session_state.get("hermes_api_base_url", ""),
-            st.session_state.get("hermes_api_key", ""),
-            st.session_state.get("hermes_model_name", "hermes-agent"),
-        )
-        (st.success if _ok else st.error)(_message)
-    st.caption("Hermes must be installed and configured separately on the same server or a reachable secured host. This integration is OFF until you click Analyze with Hermes.")
-
+    st.caption("The multi-strategy engine evaluates trend, mean reversion, breakout, momentum, range, volatility expansion, price action and optional SMC confluence. Auto entries require at least 70% directional vote alignment. The 1H chart is a trend filter only; entries remain on 5m/15m/30m. Paper trading only.")
     st.subheader("🧩 Optional Smart Money Concepts")
     st.checkbox("Use SMC confluence in decisions", value=st.session_state.get("smc_enabled", True), key="smc_enabled", help="SMC is optional; other strategy families remain eligible when there is no SMC setup.")
     st.caption("SMC detects heuristic Order Blocks, BOS, CHOCH, Fair Value Gaps and liquidity sweeps from candle OHLC data.")
@@ -1535,44 +1523,6 @@ if not overview.empty:
     st.caption(f"Markets with usable data: {usable}/{len(overview)}. Provider data may be delayed or unavailable for some symbols.")
 else:
     st.warning("No market scan results are available yet.")
-
-st.divider()
-st.subheader("🧠 Hermes AI market review")
-st.caption("Manual, on-demand review of the latest scanner output and recent paper-trade outcomes. Hermes output is commentary, not a trading signal guarantee.")
-if st.button("Analyze current dashboard with Hermes", type="primary", key="analyze_with_hermes"):
-    _api_base = str(st.session_state.get("hermes_api_base_url", "")).strip()
-    _api_key = str(st.session_state.get("hermes_api_key", "")).strip()
-    _model = str(st.session_state.get("hermes_model_name", "hermes-agent")).strip() or "hermes-agent"
-    if not _api_base or not _api_key:
-        st.error("Enter the Hermes API base URL and API key in the sidebar first.")
-    else:
-        _scan_records = []
-        if isinstance(overview, pd.DataFrame) and not overview.empty:
-            _scan_records = overview.replace({np.nan: None}).to_dict(orient="records")
-        _recent_trades = []
-        _trade_frame = pd.DataFrame(st.session_state.get("trades", []))
-        if not _trade_frame.empty:
-            _recent_trades = _trade_frame.tail(15).replace({np.nan: None}).to_dict(orient="records")
-        with st.spinner("Hermes is reviewing the latest scanner and paper-trade summary..."):
-            _ok, _result = analyze_with_hermes(
-                _api_base, _api_key, _model, _scan_records, _recent_trades,
-                timeout_seconds=45,
-            )
-        if _ok:
-            st.session_state["hermes_last_analysis"] = _result
-            st.session_state["hermes_last_analysis_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        else:
-            st.error(_result)
-if st.session_state.get("hermes_last_analysis"):
-    st.markdown(f"**Last Hermes review:** {st.session_state.get('hermes_last_analysis_time', 'time unavailable')}")
-    st.markdown(st.session_state["hermes_last_analysis"])
-    st.download_button(
-        "Download Hermes review",
-        data=st.session_state["hermes_last_analysis"],
-        file_name="hermes_market_review.txt",
-        mime="text/plain",
-        key="download_hermes_review",
-    )
 
 with st.expander("🎛️ Per-symbol automatic trading switches", expanded=True):
     st.caption("Turn a symbol OFF to prevent new paper entries on that market. Existing open positions will continue to be managed for stop-loss/targets.")
@@ -1828,7 +1778,7 @@ if st.session_state.get("last_auto_message"):
 for ev in st.session_state.get("last_auto_events", []):
     st.write("• " + ev)
 
-st.markdown("**Open automatic paper positions — all markets**")
+st.markdown(f"**Open automatic paper positions — all markets ({len([p for p in st.session_state.auto_open_positions if p.get('Status', 'OPEN') == 'OPEN'])}/{MAX_GLOBAL_OPEN_POSITIONS} global limit)**")
 all_open_positions = [
     p for p in st.session_state.auto_open_positions
     if p.get("Status", "OPEN") == "OPEN"
@@ -1843,6 +1793,7 @@ if all_open_positions:
             "Symbol": p.get("Symbol"),
             "Timeframe": p.get("Timeframe"),
             "Side": p.get("Side"),
+            "Confidence score (%)": p.get("ConfidenceScore", p.get("Score")),
             "Entry": p.get("Entry"),
             "Stop-loss": p.get("Stop"),
             "TP1": p.get("TP1"),

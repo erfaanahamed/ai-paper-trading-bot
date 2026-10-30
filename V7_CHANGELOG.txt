@@ -19,3 +19,11 @@ Safety/limitations:
 - The detector uses prior-only swing levels and completed-candle data; real-time provider bars can still be incomplete/delayed.
 - Forex Factory red-folder protection and Pause/Resume/Stop controls are retained from V6.
 - Dashboard uses the existing 30-second Streamlit rerun timer; this does not eliminate whole-script reruns.
+
+
+CONFIGURATION UPDATE (added by ChatGPT review):
+- 1h timeframe added as higher-timeframe trend filter only; entry timeframes remain 5m/15m/30m.
+- 70% minimum directional weighted-vote alignment gate added for automatic paper entries. It is a vote-alignment score, not a calibrated probability.
+- Global cap of 5 open paper positions across all markets added.
+- Duplicate positions for the same market are blocked across timeframes.
+- Pending orders are not applicable in this paper-only package; no broker pending-order system is implemented.

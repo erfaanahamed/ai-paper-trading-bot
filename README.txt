@@ -68,17 +68,9 @@ V7 OPTIONAL SMC MODULE
 - SMC definitions are algorithmic heuristics, not proof of institutional orders; paper-test and validate before relying on them.
 
 
-HERMES AGENT INTEGRATION (OPTIONAL):
-- This build includes a manual Hermes Agent connector in the Streamlit dashboard.
-- Hermes is a separate agent runtime; it is not bundled inside this ZIP. Install/configure Hermes on the same host or a secured reachable host.
-- On the Hermes host, complete Hermes setup, then enable its OpenAI-compatible API server in ~/.hermes/.env:
-    API_SERVER_ENABLED=true
-    API_SERVER_KEY=replace-with-a-long-random-secret
-  Start/restart the Hermes gateway using the current official Hermes instructions. The API commonly listens on http://127.0.0.1:8642.
-- If Hermes and Streamlit run on different hosts, bind/expose the API only through a private network or HTTPS reverse proxy with authentication. Do NOT expose port 8642 publicly without proper security.
-- In the AI Brain sidebar, set the Hermes API base URL (ending in /v1), enter the same API key, and keep model name as hermes-agent unless your setup specifies otherwise. Click Test Hermes connection.
-- Click "Analyze current dashboard with Hermes" to request an on-demand review of the current scanner rows and up to 15 recent paper-trade records.
-- This is an advisory/research integration only. Hermes output does NOT change votes, signals, risk controls, or paper orders. No live broker execution has been added.
-- API calls may incur model/provider costs and the review can take several seconds. No Hermes call is made on each automatic dashboard refresh.
-- The bot continues to work without Hermes if the integration is unused. Existing paper-trading functions are unchanged.
-- Official docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server/
+CONFIGURATION UPDATE (confidence / 1H / global position cap):
+- Added 1h data interval for the higher-timeframe filter; trade-entry timeframes remain 5m, 15m and 30m. The automatic all-market scan uses the 1h trend filter.
+- Automatic entries require at least 70% directional weighted-vote alignment. This score is not a calibrated win probability and is not evidence of a 70% win rate.
+- Added a global maximum of 5 open automatic paper positions across all markets/timeframes.
+- Duplicate open positions for the same market are blocked across timeframes.
+- This is still a paper-trading app. Chart Analysis AI, Harmonic Pattern AI and Hermes are not implemented as connected agents in this package; no real broker order execution or pending-order manager exists here.
