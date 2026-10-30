@@ -10,6 +10,7 @@ from streamlit_autorefresh import st_autorefresh
 import json
 from pathlib import Path
 import requests
+from trading_engine.agents import chart_analysis_agent, harmonic_pattern_agent
 try:
     from trading_engine.adaptive_learning import update_model as update_adaptive_model, learning_diagnostics
     from trading_engine.strategy_discovery import discover_strategies
@@ -833,7 +834,14 @@ def scan_all_market_signals():
             htf_processed = add_adaptive_levels(add_indicators(htf_market), config["htf"]) if not htf_market.empty else htf_market
             bias_value, _ = htf_bias(htf_processed) if not htf_processed.empty else ("Unknown", None)
             last_row = market_data.iloc[-1]
+            chart_agent = chart_analysis_agent(market_data, bias_value)
+            harmonic_agent = harmonic_pattern_agent(market_data)
             _, raw_score, strategy_votes, regime, raw_buys, raw_sells = evaluate_multi_strategy(last_row, bias_value)
+            # Agents contribute to the final vote only when their own confidence is at least 70%.
+            strategy_votes["Chart Analysis AI Agent"] = (
+                chart_agent["side"] if chart_agent["side"] in ("BUY", "SELL") and chart_agent["confidence"] >= 70 else "WAIT")
+            strategy_votes["Harmonic Pattern AI Agent"] = (
+                harmonic_agent["side"] if harmonic_agent["side"] in ("BUY", "SELL") and harmonic_agent["confidence"] >= 70 else "WAIT")
             best_side, selected_strategies, active_votes, buy_votes, sell_votes, adaptive_note, _ = adaptive_strategy_selection(
                 strategy_votes, regime, name, tf, st.session_state.get("trades", load_trade_log()))
             best_score = round(max(buy_votes, sell_votes))
@@ -846,6 +854,11 @@ def scan_all_market_signals():
                 "Signal strength (diagnostic)": int(best_score),
                 "Market regime": regime, "Strategy BUY votes": buy_votes, "Strategy SELL votes": sell_votes,
                 "Selected strategies": ", ".join(selected_strategies), "Selection mode": adaptive_note,
+                "Chart Analysis Agent": chart_agent["side"],
+                "Chart Agent confidence (%)": chart_agent["confidence"],
+                "Harmonic Agent": harmonic_agent["side"],
+                "Harmonic pattern": harmonic_agent["pattern"],
+                "Harmonic confidence (%)": harmonic_agent["confidence"],
                 "ML win probability": round(ml_prob * 100, 1) if ml_prob is not None else None,
                 "RSI": round(float(last_row["RSI"]), 1) if pd.notna(last_row["RSI"]) else None,
                 "ADX": round(float(last_row["ADX"]), 1) if pd.notna(last_row["ADX"]) else None,
@@ -1114,9 +1127,21 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
     current_trades = st.session_state.get("trades", load_trade_log())
     profile = learning_profile(current_trades)
     _, raw_score, checks, regime, raw_buy_votes, raw_sell_votes = evaluate_multi_strategy(last, bias)
+    chart_agent = chart_analysis_agent(d, bias)
+    harmonic_agent = harmonic_pattern_agent(d)
+    # Only sufficiently confident agent outputs are added as directional votes.
+    checks["Chart Analysis AI Agent"] = (
+        chart_agent["side"] if chart_agent["side"] in ("BUY", "SELL") and chart_agent["confidence"] >= 70 else "WAIT")
+    checks["Harmonic Pattern AI Agent"] = (
+        harmonic_agent["side"] if harmonic_agent["side"] in ("BUY", "SELL") and harmonic_agent["confidence"] >= 70 else "WAIT")
     side, selected_strategies, active_votes, buy_votes, sell_votes, adaptive_note, strategy_perf = adaptive_strategy_selection(
         checks, regime, market_name, timeframe, current_trades)
     score = round(max(buy_votes, sell_votes))
+    events.append(
+        f"Chart Analysis Agent: {chart_agent['side']} ({chart_agent['confidence']}%); "
+        f"Harmonic Agent: {harmonic_agent['side']} {harmonic_agent['pattern']} "
+        f"({harmonic_agent['confidence']}%). Agent scores are heuristic, not calibrated win probabilities."
+    )
     if side in ("BUY", "SELL") and score < MIN_CONFIDENCE_SCORE:
         side, ml_probability = "WAIT", None
         ml_note = (f"Confidence filter blocked setup ({score}% directional vote alignment; "
@@ -1506,6 +1531,18 @@ st.dataframe(pd.DataFrame(market_rows), use_container_width=True, hide_index=Tru
 st.markdown("**Global forex sessions**")
 st.dataframe(current_global_sessions(now_utc), use_container_width=True, hide_index=True)
 
+st.subheader("🤖 Analysis Agents")
+st.caption("These are local rule-based analytical components, not connected external LLM services. Their confidence scores are heuristic agreement scores, not calibrated win probabilities.")
+agent_col1, agent_col2 = st.columns(2)
+with agent_col1:
+    st.markdown("**Chart Analysis AI Agent**")
+    st.write("Evaluates EMA trend, 1H bias, RSI and directional strength.")
+    st.success("Integrated into the strategy vote when confidence is at least 70%.")
+with agent_col2:
+    st.markdown("**Harmonic Pattern AI Agent**")
+    st.write("Checks confirmed swing pivots for heuristic Gartley, Bat, Butterfly and Crab structures.")
+    st.info("Only contributes a vote when a candidate pattern is detected with at least 70% heuristic confidence.")
+st.caption("Hermes AI Agent is not connected in this package. It requires a separate Hermes runtime/API integration.")
 st.subheader("🌐 All-market live signal dashboard")
 news_on = bool(st.session_state.get("news_protection_enabled", True))
 if news_on:

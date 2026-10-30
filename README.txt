@@ -73,4 +73,13 @@ CONFIGURATION UPDATE (confidence / 1H / global position cap):
 - Automatic entries require at least 70% directional weighted-vote alignment. This score is not a calibrated win probability and is not evidence of a 70% win rate.
 - Added a global maximum of 5 open automatic paper positions across all markets/timeframes.
 - Duplicate open positions for the same market are blocked across timeframes.
-- This is still a paper-trading app. Chart Analysis AI, Harmonic Pattern AI and Hermes are not implemented as connected agents in this package; no real broker order execution or pending-order manager exists here.
+- This is still a paper-trading app. Chart Analysis AI and Harmonic Pattern AI are integrated as local rule-based analytical components; Hermes is not connected as an external agent in this package; no real broker order execution or pending-order manager exists here.
+
+
+AGENT INTEGRATION UPDATE:
+- Added trading_engine/agents.py.
+- Chart Analysis AI Agent evaluates trend, RSI, directional strength and higher-timeframe bias.
+- Harmonic Pattern AI Agent checks confirmed swing pivots for heuristic Gartley, Bat, Butterfly and Crab candidates.
+- Both appear in the dashboard and their qualifying signals contribute votes only when heuristic confidence is at least 70%.
+- Their confidence is not calibrated probability or a proven win rate. The harmonic detector is heuristic and must be evaluated in historical backtests.
+- Hermes is not connected; no claim of a live Hermes runtime/API integration is made.
