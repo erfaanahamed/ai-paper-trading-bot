@@ -212,7 +212,7 @@ MARKETS = {
 }
 INTERVAL_MAP = {"5m": ("5m", "5d"), "15m": ("15m", "60d"), "30m": ("30m", "60d"), "1h": ("1h", "60d")}
 
-# Agreed global safety settings. Confidence is directional vote alignment, not a calibrated win probability.
+# Global safety settings. The 0-100 engine score is directional vote strength across all strategy slots, not win probability.
 MIN_CONFIDENCE_SCORE = 70
 MAX_GLOBAL_OPEN_POSITIONS = 5
 
@@ -1184,8 +1184,8 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
     )
     if side in ("BUY", "SELL") and score < MIN_CONFIDENCE_SCORE:
         side, ml_probability = "WAIT", None
-        ml_note = (f"Confidence filter blocked setup ({score}% directional vote alignment; "
-                   f"minimum {MIN_CONFIDENCE_SCORE}%). This score is not a calibrated win probability.")
+        ml_note = (f"Directional vote-strength gate blocked setup ({score}% of all strategy slots support the leading side; "
+                   f"minimum {MIN_CONFIDENCE_SCORE}%). This is not a calibrated win probability.")
     else:
         side, ml_probability, ml_note = apply_learning_gate(side, last, bias, score, profile)
     if side in ("BUY", "SELL"):
@@ -1716,9 +1716,9 @@ with st.expander("🤖 Multi-Strategy AI Agent — vote analysis & recommendatio
             a2.metric("BUY votes", strategy_agent_report["buy_votes"])
             a3.metric("SELL votes", strategy_agent_report["sell_votes"])
             a4.metric("Active vote agreement", f"{strategy_agent_report['active_vote_agreement_pct']:.1f}%")
-            a5.metric("Engine confidence score", f"{strategy_agent_report['confidence']:.1f}%")
+            a5.metric("Directional vote strength", f"{strategy_agent_report['confidence']:.1f}%")
             st.write(f"**Engine decision:** {strategy_agent_report['engine_side']} · **Regime:** {strategy_agent_report['regime']} · **Closed trades reviewed:** {strategy_agent_report['closed_trades_reviewed']}")
-            st.caption("Active vote agreement is calculated only from BUY/SELL votes. Engine confidence is a separate rule-based score that may include WAIT votes; neither is a calibrated win probability.")
+            st.caption("Active vote agreement uses BUY/SELL votes only. Directional vote strength divides the leading-side votes by all strategy slots, including WAIT votes. The 70% gate applies to vote strength. Neither metric is a calibrated win probability.")
             st.info(strategy_agent_report["recommendation"])
             st.caption("Advisory only: the existing Multi-Strategy Engine retains decision control. The agent cannot execute orders or change strategy weights automatically. Confidence is not a guaranteed win probability.")
         except Exception as exc:

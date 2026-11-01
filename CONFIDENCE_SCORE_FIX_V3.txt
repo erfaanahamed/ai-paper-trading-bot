@@ -1,0 +1,22 @@
+AI Brain V7 — Confidence/Score Semantics Fix V3
+
+What changed:
+- Renamed the Multi-Strategy dashboard metric from "Engine confidence score" to "Directional vote strength".
+- Clarified that directional vote strength is the leading BUY/SELL side's votes divided by all strategy slots, including WAIT votes.
+- Kept active vote agreement separate: this uses only BUY and SELL votes.
+- Updated the 70% gate message to state that it is a directional vote-strength gate, not a win-probability estimate.
+- Kept the 70% threshold unchanged. No artificial score increase was made.
+
+Example: 3 BUY votes, 0 SELL votes, and 6 WAIT votes means:
+- Active directional agreement = 100% (3 / 3)
+- Directional vote strength = 33.3% (3 / 9)
+- The 70% directional vote-strength gate correctly blocks the setup.
+
+Important:
+- Neither score is a calibrated win probability.
+- This patch clarifies metric semantics; it does not establish profitability.
+- Continue paper trading and validate with historical backtests.
+
+Validation performed:
+- Python compileall passed.
+- Automated tests: 40 passed.
