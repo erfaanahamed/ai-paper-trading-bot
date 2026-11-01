@@ -1,0 +1,7 @@
+SELF-LEARNING ENGINE + SELF-LEARNING AI AGENT INTEGRATION FIX
+
+This build imports the Self-Learning AI Agent in the main dashboard and renders its advisory status/recommendation under the Self-learning engine panel. It also exposes the hidden adaptive-learning import error in the dashboard instead of silently masking it.
+
+The learning engine remains responsible for training/validation; the AI Agent is advisory only and cannot execute orders or change rules. If the engine still reports unavailable after deployment, read the displayed import diagnostic and ensure root requirements.txt is installed by Streamlit.
+
+This is a code integration fix, not evidence of profitability. Keep paper trading enabled and verify the deployed app.

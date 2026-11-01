@@ -15,13 +15,24 @@ try:
 except ModuleNotFoundError:
     # Deployment fallback if the trading_engine package folder was not uploaded.
     from agents import chart_analysis_agent, harmonic_pattern_agent
+ADAPTIVE_IMPORT_ERROR = None
 try:
     from trading_engine.adaptive_learning import update_model as update_adaptive_model, learning_diagnostics
-    from trading_engine.strategy_discovery import discover_strategies
-except Exception:
+except Exception as exc:
     update_adaptive_model = None
     learning_diagnostics = None
+    ADAPTIVE_IMPORT_ERROR = f"{type(exc).__name__}: {str(exc)[:180]}"
+try:
+    from trading_engine.strategy_discovery import discover_strategies
+except Exception:
     discover_strategies = None
+try:
+    from trading_engine.self_learning_agent import assess_learning as assess_self_learning_agent
+except Exception as exc:
+    assess_self_learning_agent = None
+    SELF_LEARNING_AGENT_IMPORT_ERROR = f"{type(exc).__name__}: {str(exc)[:180]}"
+else:
+    SELF_LEARNING_AGENT_IMPORT_ERROR = None
 # Standalone-first SMC import: the main app.py contains the full application and
 # must not require importing trading_engine.app. Prefer the root-level smc.py so
 # deployments still start even if GitHub's upload omitted the package directory.
@@ -539,6 +550,8 @@ def learning_profile(trades):
             return profile
 
     profile["model_note"] = "Adaptive learning module unavailable; rule-based signal remains active."
+    if ADAPTIVE_IMPORT_ERROR:
+        profile["model_note"] += f" Import diagnostic: {ADAPTIVE_IMPORT_ERROR}"
     return profile
 
 
@@ -1709,6 +1722,24 @@ with st.expander("🧠 Self-learning engine — trade outcomes + machine learnin
     if ml_probability is not None:
         st.write(f"Current setup estimated win probability: {ml_probability:.1%}.")
     st.caption("Adaptive learning uses completed paper trades only. A model needs at least 300 trades, at least 50 wins and 50 losses, and chronological holdout AUC ≥ 0.53. Candidate models that fail validation are not promoted. Probabilities are estimates, not guarantees.")
+
+    st.markdown("### 🤖 Self-Learning AI Agent")
+    if assess_self_learning_agent is None:
+        st.warning("Self-Learning AI Agent module could not be imported.")
+        if SELF_LEARNING_AGENT_IMPORT_ERROR:
+            st.code(SELF_LEARNING_AGENT_IMPORT_ERROR)
+    else:
+        try:
+            agent_report = assess_self_learning_agent(
+                st.session_state.trades,
+                diagnostics_fn=learning_diagnostics,
+                model_status={"status": learning.get("model_status", "collecting")},
+            )
+            st.metric("Agent status", agent_report.get("status", "ADVISORY"))
+            st.write(agent_report.get("recommendation", "Continue collecting completed paper-trade evidence."))
+            st.caption(f"Closed trades reviewed: {agent_report.get('closed_trades', 0)} · Order execution authority: No · Automatic rule changes: No")
+        except Exception as exc:
+            st.warning(f"Self-Learning AI Agent report unavailable: {type(exc).__name__}: {str(exc)[:160]}")
 
 with st.expander("🔬 Controlled strategy discovery — research candidates", expanded=False):
     if discover_strategies is None:
