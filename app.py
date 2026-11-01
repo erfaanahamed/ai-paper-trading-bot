@@ -10,7 +10,11 @@ from streamlit_autorefresh import st_autorefresh
 import json
 from pathlib import Path
 import requests
-from trading_engine.agents import chart_analysis_agent, harmonic_pattern_agent
+try:
+    from trading_engine.agents import chart_analysis_agent, harmonic_pattern_agent
+except ModuleNotFoundError:
+    # Deployment fallback if the trading_engine package folder was not uploaded.
+    from agents import chart_analysis_agent, harmonic_pattern_agent
 try:
     from trading_engine.adaptive_learning import update_model as update_adaptive_model, learning_diagnostics
     from trading_engine.strategy_discovery import discover_strategies
