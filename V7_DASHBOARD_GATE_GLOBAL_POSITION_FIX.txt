@@ -1,0 +1,11 @@
+AI Brain V7 - Dashboard Gate and Global Position Safety Fix
+
+Changes:
+1. Multi-Strategy AI Agent dashboard now applies the same 70% directional vote-strength gate as automatic paper-entry logic. If score is below 70%, displayed engine decision becomes WAIT and the warning explains why.
+2. Added a final safety check immediately before a new paper position is committed: maximum 5 OPEN positions globally and one open position per market across timeframes/agents.
+3. Existing global open-position count and duplicate-market checks remain in place.
+
+Validation:
+- Automated tests: 40 passed.
+- These are code-level tests, not proof of profitable trading or live-broker execution.
+- Please deploy to a staging/paper environment and verify the dashboard before any live use.

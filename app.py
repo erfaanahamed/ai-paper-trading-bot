@@ -1222,6 +1222,26 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
                     "EstimatedCostBps": DEFAULT_ESTIMATED_COST_BPS,
                     **extract_ml_features(last, bias, score, side), "Status": "OPEN"
                 }
+                # Recheck global cap and duplicate market immediately before committing the
+                # new position. This is a final fail-safe against future refactors/agent paths.
+                current_open = [p for p in open_positions if p.get("Status", "OPEN") == "OPEN"]
+                if len(current_open) >= MAX_GLOBAL_OPEN_POSITIONS:
+                    events.append(
+                        f"BLOCKED {side} {market_name}: maximum of {MAX_GLOBAL_OPEN_POSITIONS} "
+                        "global open positions already reached."
+                    )
+                    processed[market_key] = bar_time
+                    st.session_state.auto_last_processed = processed
+                    return balance, trades_today, daily_start_balance, open_positions, events, "Global open-position cap reached."
+                if any(p.get("Market") == market_name for p in current_open):
+                    events.append(
+                        f"BLOCKED {side} {market_name}: duplicate open position for this market "
+                        "across timeframes/agents."
+                    )
+                    processed[market_key] = bar_time
+                    st.session_state.auto_last_processed = processed
+                    return balance, trades_today, daily_start_balance, open_positions, events, "Duplicate position blocked."
+
                 open_positions.append(pos)
                 trades_today += 1
                 events.append(f"Automatically opened paper {side} on {market_name} at {entry:.5f}; selected strategies: {', '.join(k for k,v in active_votes.items() if v == side)}.")
@@ -1699,7 +1719,20 @@ last = data.iloc[-1]
 learning = learning_profile(st.session_state.trades)
 side, score, strategy_votes, regime, buy_votes, sell_votes = evaluate_multi_strategy(last, bias)
 checks = strategy_votes
-side, ml_probability, ml_note = apply_learning_gate(side, last, bias, score, learning)
+
+# Keep the dashboard advisory decision consistent with the automatic-entry gate.
+# A directional signal below the configured vote-strength minimum must display WAIT,
+# even when all active BUY/SELL votes agree with each other.
+if side in ("BUY", "SELL") and score < MIN_CONFIDENCE_SCORE:
+    side, ml_probability = "WAIT", None
+    ml_note = (
+        f"Directional vote-strength gate blocked setup ({score}% of all strategy slots "
+        f"support the leading side; minimum {MIN_CONFIDENCE_SCORE}%). "
+        "This is not a calibrated win probability."
+    )
+else:
+    side, ml_probability, ml_note = apply_learning_gate(side, last, bias, score, learning)
+
 with st.expander("🤖 Multi-Strategy AI Agent — vote analysis & recommendations", expanded=True):
     if assess_multi_strategy_agent is None:
         st.warning("Multi-Strategy AI Agent module could not be imported.")
