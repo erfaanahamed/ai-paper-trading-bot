@@ -29,7 +29,11 @@ def assess_multi_strategy(votes: Mapping[str, str] | None, side: str = "WAIT",
     elif side == "WAIT":
         recommendation = "The engine has not confirmed an entry. Do not force a trade; review vote agreement and risk gates."
     elif confidence < 70:
-        recommendation = "Directional agreement is below the configured 70% threshold. Do not treat this setup as eligible."
+        recommendation = (
+            f"Engine confidence score is {float(confidence or 0):.1f}%, below the configured 70% minimum. "
+            f"Active directional votes agree at {agreement:.1f}%, but agreement is not win probability. "
+            "Do not treat this setup as eligible."
+        )
     else:
         recommendation = f"The engine currently favours {side}; verify the 70% confidence gate, session, spread, duplicate-order and risk checks before any paper entry."
     return {

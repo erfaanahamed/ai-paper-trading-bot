@@ -1711,12 +1711,14 @@ with st.expander("🤖 Multi-Strategy AI Agent — vote analysis & recommendatio
                 strategy_votes, side=side, confidence=score, regime=regime,
                 trades=st.session_state.trades,
             )
-            a1, a2, a3, a4 = st.columns(4)
+            a1, a2, a3, a4, a5 = st.columns(5)
             a1.metric("Agent status", strategy_agent_report["status"])
             a2.metric("BUY votes", strategy_agent_report["buy_votes"])
             a3.metric("SELL votes", strategy_agent_report["sell_votes"])
             a4.metric("Active vote agreement", f"{strategy_agent_report['active_vote_agreement_pct']:.1f}%")
+            a5.metric("Engine confidence score", f"{strategy_agent_report['confidence']:.1f}%")
             st.write(f"**Engine decision:** {strategy_agent_report['engine_side']} · **Regime:** {strategy_agent_report['regime']} · **Closed trades reviewed:** {strategy_agent_report['closed_trades_reviewed']}")
+            st.caption("Active vote agreement is calculated only from BUY/SELL votes. Engine confidence is a separate rule-based score that may include WAIT votes; neither is a calibrated win probability.")
             st.info(strategy_agent_report["recommendation"])
             st.caption("Advisory only: the existing Multi-Strategy Engine retains decision control. The agent cannot execute orders or change strategy weights automatically. Confidence is not a guaranteed win probability.")
         except Exception as exc:
