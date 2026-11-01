@@ -1,0 +1,20 @@
+AI BRAIN V7 — ALL-MARKET TIMEFRAME VOTE TABLE UPDATE
+
+Change:
+- Added a Multi-Strategy AI Agent dashboard table with an independent row for every configured market and each configured entry timeframe (5m, 15m, 30m).
+- The 1H timeframe is shown as trend context only, not an entry timeframe.
+- Shows BUY votes, SELL votes, active vote agreement, directional vote strength, decision, and a diagnostic reason.
+- Adds Chart Analysis AI Agent and Harmonic Pattern AI Agent votes only when their heuristic confidence is at least 70%.
+- Missing/short data is marked DATA UNAVAILABLE; exceptions are marked DATA ERROR.
+- Added CSV download for the complete table.
+- The table is diagnostic only and does not place trades or bypass risk/session/news/duplicate/global-position gates.
+
+Metric definitions:
+- Active vote agreement = leading-side BUY/SELL votes divided by all active BUY/SELL votes.
+- Directional vote strength = leading-side votes divided by all strategy slots, including WAIT votes.
+- These metrics are heuristic vote measures, not calibrated win probabilities.
+
+Validation:
+- app.py passed Python syntax compilation.
+- Project tests: 40 passed with PYTHONPATH=.
+- Live Yahoo Finance data availability and Streamlit UI behavior were not tested in this offline validation environment.

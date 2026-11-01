@@ -914,6 +914,72 @@ def scan_all_market_signals():
     return pd.DataFrame(rows)
 
 
+def scan_all_market_timeframe_votes():
+    """Build one independent vote-analysis row per configured market and entry timeframe.
+
+    This is a diagnostic scan only: it does not open trades. The 1H data is used
+    only as trend context for each 5m/15m/30m row.
+    """
+    rows = []
+    trades = st.session_state.get("trades", load_trade_log())
+    for market_name, cfg in MARKETS.items():
+        symbol = cfg["symbol"]
+        # Reuse the same higher-timeframe context for all three entry timeframes.
+        try:
+            htf_raw = download_data(symbol, "1h")
+            htf = add_adaptive_levels(add_indicators(htf_raw), "1h") if not htf_raw.empty else pd.DataFrame()
+            bias, _ = htf_bias(htf) if not htf.empty else ("Unknown", None)
+        except Exception:
+            htf = pd.DataFrame()
+            bias = "Unknown"
+
+        for timeframe in cfg.get("allowed_tfs", ["5m", "15m", "30m"]):
+            base = {"Market": market_name, "Symbol": symbol, "Timeframe": timeframe, "1H trend": bias}
+            try:
+                raw = download_data(symbol, timeframe)
+                if raw.empty or len(raw) < 60:
+                    rows.append({**base, "BUY votes": None, "SELL votes": None,
+                                 "Active vote agreement (%)": None, "Directional vote strength (%)": None,
+                                 "Decision": "DATA UNAVAILABLE", "Reason": "Insufficient candles or provider returned no data"})
+                    continue
+                data = add_smc_features(add_adaptive_levels(add_indicators(raw), timeframe))
+                data["PrevClose"] = data["Close"].shift(1)
+                data["PrevSupport"] = data["Low"].rolling(20).min().shift(2)
+                data["PrevResistance"] = data["High"].rolling(20).max().shift(2)
+                last_row = data.iloc[-1]
+                chart = chart_analysis_agent(data, bias)
+                harmonic = harmonic_pattern_agent(data)
+                raw_side, _, votes, regime, _, _ = evaluate_multi_strategy(last_row, bias)
+                votes["Chart Analysis AI Agent"] = chart["side"] if chart["side"] in ("BUY", "SELL") and chart["confidence"] >= 70 else "WAIT"
+                votes["Harmonic Pattern AI Agent"] = harmonic["side"] if harmonic["side"] in ("BUY", "SELL") and harmonic["confidence"] >= 70 else "WAIT"
+                buys = sum(v == "BUY" for v in votes.values())
+                sells = sum(v == "SELL" for v in votes.values())
+                active = buys + sells
+                agreement = (100.0 * max(buys, sells) / active) if active else 0.0
+                strength = 100.0 * max(buys, sells) / max(len(votes), 1)
+                reasons = []
+                decision = raw_side
+                if raw_side == "WAIT":
+                    reasons.append("No clear directional majority (requires at least two votes)")
+                if raw_side in ("BUY", "SELL") and strength < MIN_CONFIDENCE_SCORE:
+                    decision = "WAIT"
+                    reasons.append(f"Directional vote strength {strength:.1f}% is below {MIN_CONFIDENCE_SCORE}%")
+                if bias == "Unknown":
+                    reasons.append("1H trend context unavailable")
+                rows.append({**base, "BUY votes": buys, "SELL votes": sells,
+                             "Active vote agreement (%)": round(agreement, 1),
+                             "Directional vote strength (%)": round(strength, 1),
+                             "Decision": decision,
+                             "Reason": "; ".join(reasons) if reasons else "Vote gate passed; other live entry/risk filters still apply",
+                             "Market regime": regime, "Chart Agent": chart["side"],
+                             "Harmonic Agent": harmonic["side"], "Harmonic pattern": harmonic.get("pattern", "None")})
+            except Exception as exc:
+                rows.append({**base, "BUY votes": None, "SELL votes": None,
+                             "Active vote agreement (%)": None, "Directional vote strength (%)": None,
+                             "Decision": "DATA ERROR", "Reason": f"{type(exc).__name__}: {str(exc)[:100]}"})
+    return pd.DataFrame(rows)
+
+
 def make_trade_levels(last, side, risk_pct, rr2):
     """Create strictly ordered, directionally valid SL/TP levels."""
     entry = float(last["Close"])
@@ -1733,29 +1799,22 @@ if side in ("BUY", "SELL") and score < MIN_CONFIDENCE_SCORE:
 else:
     side, ml_probability, ml_note = apply_learning_gate(side, last, bias, score, learning)
 
-with st.expander("🤖 Multi-Strategy AI Agent — vote analysis & recommendations", expanded=True):
-    if assess_multi_strategy_agent is None:
-        st.warning("Multi-Strategy AI Agent module could not be imported.")
-        if MULTI_STRATEGY_AGENT_IMPORT_ERROR:
-            st.code(MULTI_STRATEGY_AGENT_IMPORT_ERROR)
+with st.expander("🤖 Multi-Strategy AI Agent — all-market vote analysis", expanded=True):
+    st.write("Each row is calculated independently for one market and one entry timeframe. The 1H timeframe is trend context only; entries are analyzed on 5m, 15m and 30m. This table is diagnostic and does not place trades.")
+    with st.spinner("Calculating votes for all configured markets and entry timeframes..."):
+        all_tf_votes = scan_all_market_timeframe_votes()
+    if not all_tf_votes.empty:
+        display_cols = ["Market", "Symbol", "Timeframe", "1H trend", "BUY votes", "SELL votes",
+                        "Active vote agreement (%)", "Directional vote strength (%)", "Decision", "Reason"]
+        display_cols = [c for c in display_cols if c in all_tf_votes.columns]
+        st.dataframe(all_tf_votes[display_cols], use_container_width=True, hide_index=True)
+        ready_rows = int(all_tf_votes["Decision"].isin(["BUY", "SELL"]).sum())
+        st.caption(f"Rows analyzed: {len(all_tf_votes)} · Rows with directional decision before other entry/risk filters: {ready_rows}. Missing market data is shown explicitly; it is not treated as a WAIT signal.")
+        st.download_button("Download all-market vote analysis CSV", all_tf_votes.to_csv(index=False).encode("utf-8"),
+                           "ai_brain_all_market_timeframe_votes.csv", "text/csv")
     else:
-        try:
-            strategy_agent_report = assess_multi_strategy_agent(
-                strategy_votes, side=side, confidence=score, regime=regime,
-                trades=st.session_state.trades,
-            )
-            a1, a2, a3, a4, a5 = st.columns(5)
-            a1.metric("Agent status", strategy_agent_report["status"])
-            a2.metric("BUY votes", strategy_agent_report["buy_votes"])
-            a3.metric("SELL votes", strategy_agent_report["sell_votes"])
-            a4.metric("Active vote agreement", f"{strategy_agent_report['active_vote_agreement_pct']:.1f}%")
-            a5.metric("Directional vote strength", f"{strategy_agent_report['confidence']:.1f}%")
-            st.write(f"**Engine decision:** {strategy_agent_report['engine_side']} · **Regime:** {strategy_agent_report['regime']} · **Closed trades reviewed:** {strategy_agent_report['closed_trades_reviewed']}")
-            st.caption("Active vote agreement uses BUY/SELL votes only. Directional vote strength divides the leading-side votes by all strategy slots, including WAIT votes. The 70% gate applies to vote strength. Neither metric is a calibrated win probability.")
-            st.info(strategy_agent_report["recommendation"])
-            st.caption("Advisory only: the existing Multi-Strategy Engine retains decision control. The agent cannot execute orders or change strategy weights automatically. Confidence is not a guaranteed win probability.")
-        except Exception as exc:
-            st.warning(f"Multi-Strategy AI Agent report unavailable: {type(exc).__name__}: {str(exc)[:160]}")
+        st.warning("No all-market timeframe vote results are available yet.")
+    st.caption("Active vote agreement = leading BUY/SELL votes divided by all BUY/SELL votes. Directional vote strength = leading-side votes divided by all strategy slots, including WAIT. These are heuristic vote metrics, not win probabilities. The table does not override session, news, duplicate-position, global five-position, or other risk gates.")
 daily_loss_reached = ((st.session_state.daily_start - st.session_state.balance) / max(st.session_state.daily_start, 1) * 100) >= max_daily_loss
 if st.session_state.trades_today >= max_trades_per_day:
     side = "WAIT"
