@@ -1,0 +1,7 @@
+SELF-LEARNING AGENT IMPORT FIX V2
+
+The screenshot error says Python cannot find the trading_engine package. This build adds a root-level self_learning_agent.py fallback and updates app.py to try it if the package import fails.
+
+Important: this fallback makes the advisory agent importable; it does NOT replace the full trading_engine package required for the adaptive learning engine. To restore actual model training/diagnostics, upload the complete trading_engine/ folder from this ZIP to the repository, preserving its folder structure, and commit all files.
+
+After deployment, verify the Self-Learning AI Agent status. Keep paper trading enabled.

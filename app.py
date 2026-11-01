@@ -28,11 +28,21 @@ except Exception:
     discover_strategies = None
 try:
     from trading_engine.self_learning_agent import assess_learning as assess_self_learning_agent
-except Exception as exc:
-    assess_self_learning_agent = None
-    SELF_LEARNING_AGENT_IMPORT_ERROR = f"{type(exc).__name__}: {str(exc)[:180]}"
-else:
+    SELF_LEARNING_AGENT_IMPORT_SOURCE = "trading_engine.self_learning_agent"
     SELF_LEARNING_AGENT_IMPORT_ERROR = None
+except Exception as package_exc:
+    try:
+        # Fallback for deployments where only root-level files were uploaded.
+        from self_learning_agent import assess_learning as assess_self_learning_agent
+        SELF_LEARNING_AGENT_IMPORT_SOURCE = "self_learning_agent.py (root fallback)"
+        SELF_LEARNING_AGENT_IMPORT_ERROR = None
+    except Exception as root_exc:
+        assess_self_learning_agent = None
+        SELF_LEARNING_AGENT_IMPORT_SOURCE = None
+        SELF_LEARNING_AGENT_IMPORT_ERROR = (
+            f"Package import: {type(package_exc).__name__}: {str(package_exc)[:100]} | "
+            f"Root fallback: {type(root_exc).__name__}: {str(root_exc)[:100]}"
+        )
 # Standalone-first SMC import: the main app.py contains the full application and
 # must not require importing trading_engine.app. Prefer the root-level smc.py so
 # deployments still start even if GitHub's upload omitted the package directory.
