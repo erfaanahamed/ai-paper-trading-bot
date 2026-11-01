@@ -27,6 +27,19 @@ try:
 except Exception:
     discover_strategies = None
 try:
+    from trading_engine.multi_strategy_agent import assess_multi_strategy as assess_multi_strategy_agent
+    MULTI_STRATEGY_AGENT_IMPORT_ERROR = None
+except Exception as package_exc:
+    try:
+        from multi_strategy_agent import assess_multi_strategy as assess_multi_strategy_agent
+        MULTI_STRATEGY_AGENT_IMPORT_ERROR = None
+    except Exception as root_exc:
+        assess_multi_strategy_agent = None
+        MULTI_STRATEGY_AGENT_IMPORT_ERROR = (
+            f"Package import: {type(package_exc).__name__}: {str(package_exc)[:100]} | "
+            f"Root fallback: {type(root_exc).__name__}: {str(root_exc)[:100]}"
+        )
+try:
     from trading_engine.self_learning_agent import assess_learning as assess_self_learning_agent
     SELF_LEARNING_AGENT_IMPORT_SOURCE = "trading_engine.self_learning_agent"
     SELF_LEARNING_AGENT_IMPORT_ERROR = None
@@ -1687,6 +1700,27 @@ learning = learning_profile(st.session_state.trades)
 side, score, strategy_votes, regime, buy_votes, sell_votes = evaluate_multi_strategy(last, bias)
 checks = strategy_votes
 side, ml_probability, ml_note = apply_learning_gate(side, last, bias, score, learning)
+with st.expander("🤖 Multi-Strategy AI Agent — vote analysis & recommendations", expanded=True):
+    if assess_multi_strategy_agent is None:
+        st.warning("Multi-Strategy AI Agent module could not be imported.")
+        if MULTI_STRATEGY_AGENT_IMPORT_ERROR:
+            st.code(MULTI_STRATEGY_AGENT_IMPORT_ERROR)
+    else:
+        try:
+            strategy_agent_report = assess_multi_strategy_agent(
+                strategy_votes, side=side, confidence=score, regime=regime,
+                trades=st.session_state.trades,
+            )
+            a1, a2, a3, a4 = st.columns(4)
+            a1.metric("Agent status", strategy_agent_report["status"])
+            a2.metric("BUY votes", strategy_agent_report["buy_votes"])
+            a3.metric("SELL votes", strategy_agent_report["sell_votes"])
+            a4.metric("Active vote agreement", f"{strategy_agent_report['active_vote_agreement_pct']:.1f}%")
+            st.write(f"**Engine decision:** {strategy_agent_report['engine_side']} · **Regime:** {strategy_agent_report['regime']} · **Closed trades reviewed:** {strategy_agent_report['closed_trades_reviewed']}")
+            st.info(strategy_agent_report["recommendation"])
+            st.caption("Advisory only: the existing Multi-Strategy Engine retains decision control. The agent cannot execute orders or change strategy weights automatically. Confidence is not a guaranteed win probability.")
+        except Exception as exc:
+            st.warning(f"Multi-Strategy AI Agent report unavailable: {type(exc).__name__}: {str(exc)[:160]}")
 daily_loss_reached = ((st.session_state.daily_start - st.session_state.balance) / max(st.session_state.daily_start, 1) * 100) >= max_daily_loss
 if st.session_state.trades_today >= max_trades_per_day:
     side = "WAIT"
