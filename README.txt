@@ -1,4 +1,4 @@
-AI Brain Self-Learning Paper Trading Bot — Updated Dashboard
+Hermes AI Agent Self-Learning Paper Trading Bot — Updated Dashboard
 
 Files:
 - app.py: Streamlit paper-trading app with the existing all-market scanner, indicator diagnostics, self-learning baseline, paper positions, trade history, and simplified backtest.

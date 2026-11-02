@@ -118,7 +118,7 @@ def _fetch_automatic_news_calendar():
     try:
         response = requests.get(
             url,
-            headers={"User-Agent": "AIBrainPaperTrader/5.0"},
+            headers={"User-Agent": "HermesAITradingAgent/1.0"},
             timeout=12,
         )
         response.raise_for_status()
@@ -216,7 +216,7 @@ try:
 except Exception:
     SKLEARN_AVAILABLE = False
 
-st.set_page_config(page_title="AI Paper Trading Brain", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Hermes AI Agent — Paper Trading Lab", page_icon="🤖", layout="wide")
 
 # -----------------------------
 # Configuration / data helpers
@@ -1617,7 +1617,7 @@ def run_backtest(df, htf, timeframe, htf_timeframe, threshold, risk_pct, rr2, st
 # -----------------------------
 # UI
 # -----------------------------
-st.title("⚡ AI Brain — Paper Trading Lab")
+st.title("🤖 Hermes AI Agent — Paper Trading Lab")
 st.caption("Multi-strategy paper-trading research engine with trend, mean-reversion, breakout, momentum, range, volatility-expansion, price-action and liquidity-sweep proxy strategies. Paper trading only; no broker, wallet, or live-order connection.")
 with st.sidebar:
     st.header("Bot settings")
@@ -1878,7 +1878,7 @@ with st.expander("⚡ Multi-strategy engine: strategy votes & market regime", ex
 
 st.caption(f"Per-symbol auto-trading is {'ON' if st.session_state.symbol_trade_enabled.get(market_name, True) else 'OFF'} for {market_name}. Change it in the per-symbol switches above. The Market dropdown only selects the detailed chart.")
 
-with st.spinner("Downloading selected-market candles and evaluating the AI Brain..."):
+with st.spinner("Downloading selected-market candles and evaluating Hermes AI Agent..."):
     raw = download_data(cfg["symbol"], signal_tf)
     htf = download_data(cfg["symbol"], htf_tf)
     data = add_smc_features(add_adaptive_levels(add_indicators(raw), signal_tf)) if not raw.empty else pd.DataFrame()
@@ -2020,22 +2020,32 @@ st.caption(f"Paper trading only. The app script reruns about every 30 seconds wh
 
 if "auto_bot_status" not in st.session_state:
     st.session_state.auto_bot_status = "RUNNING"
+
+def _pause_auto_bot():
+    st.session_state.auto_bot_status = "PAUSED"
+    st.session_state.last_auto_message = "Bot paused: no new paper entries; existing positions will continue to be managed."
+
+def _resume_auto_bot():
+    st.session_state.auto_bot_status = "RUNNING"
+    st.session_state.last_auto_message = "Bot started/resumed. Automatic paper scanning is enabled."
+
+def _stop_auto_bot():
+    st.session_state.auto_bot_status = "STOPPED"
+    st.session_state.last_auto_message = "Bot stopped: automatic scans and new entries are disabled. Open paper positions and trade history are preserved; positions are not automatically closed."
+
 ctrl1, ctrl2, ctrl3, ctrl4 = st.columns([1, 1, 1, 2])
 with ctrl1:
-    if st.button("⏸️ Pause", use_container_width=True, disabled=st.session_state.auto_bot_status != "RUNNING"):
-        st.session_state.auto_bot_status = "PAUSED"
-        st.session_state.last_auto_message = "Bot paused: no new paper entries; existing positions will continue to be managed."
-        st.rerun()
+    st.button("⏸️ Pause", use_container_width=True,
+              disabled=st.session_state.auto_bot_status != "RUNNING",
+              on_click=_pause_auto_bot, key="auto_pause_button")
 with ctrl2:
-    if st.button("▶️ Resume / Start", use_container_width=True, disabled=st.session_state.auto_bot_status == "RUNNING"):
-        st.session_state.auto_bot_status = "RUNNING"
-        st.session_state.last_auto_message = "Bot started/resumed. Automatic paper scanning is enabled."
-        st.rerun()
+    st.button("▶️ Resume / Start", use_container_width=True,
+              disabled=st.session_state.auto_bot_status == "RUNNING",
+              on_click=_resume_auto_bot, key="auto_resume_button")
 with ctrl3:
-    if st.button("⏹️ Stop", use_container_width=True, disabled=st.session_state.auto_bot_status == "STOPPED"):
-        st.session_state.auto_bot_status = "STOPPED"
-        st.session_state.last_auto_message = "Bot stopped: automatic scans and new entries are disabled. Open paper positions and trade history are preserved; positions are not automatically closed."
-        st.rerun()
+    st.button("⏹️ Stop", use_container_width=True,
+              disabled=st.session_state.auto_bot_status == "STOPPED",
+              on_click=_stop_auto_bot, key="auto_stop_button")
 with ctrl4:
     if st.session_state.auto_bot_status == "RUNNING":
         st.success("Bot status: RUNNING")

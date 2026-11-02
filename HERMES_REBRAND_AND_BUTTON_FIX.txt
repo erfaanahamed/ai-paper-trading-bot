@@ -1,0 +1,5 @@
+HERMES AI AGENT REBRAND AND BUTTON FIX
+
+Dashboard title and page title now use “Hermes AI Agent — Paper Trading Lab”. Pause, Resume/Start, and Stop use Streamlit on_click callbacks to apply status changes during reruns. Pause continues managing existing paper positions but blocks new entries. Stop disables automatic scans and new entries without closing existing paper positions.
+
+IMPORTANT: This is a dashboard branding change only. It does NOT install or connect the external Hermes runtime/API. The strategy components remain the existing local rule-based paper-trading implementation. Review and test on Streamlit Cloud before relying on it.
