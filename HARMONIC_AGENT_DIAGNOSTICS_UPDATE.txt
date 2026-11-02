@@ -1,0 +1,12 @@
+HARMONIC AGENT DIAGNOSTICS UPDATE
+
+Changes:
+- Scans up to 35 recent confirmed pivots in consecutive five-pivot windows rather than checking only the newest five pivots.
+- Adds diagnostic status/reason values for no data, insufficient swings, non-alternating swings, and unmatched ratios.
+- Exposes pivots_found and groups_checked in the agent result for debugging.
+- Preserves heuristic-only confidence semantics; scores are not calibrated win probabilities.
+
+Validation:
+- Full existing project test suite: 40 passed.
+- Python syntax/import checks are covered by the test run.
+- This does not establish successful live pattern detection across all markets/timeframes or profitability. Known-pattern synthetic tests and live data verification remain necessary.

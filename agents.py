@@ -78,56 +78,71 @@ def _confirmed_pivots(df: pd.DataFrame, left: int = 3, right: int = 3):
 
 
 def harmonic_pattern_agent(df: pd.DataFrame) -> dict:
-    """Heuristic Gartley/Bat/Butterfly/Crab detector from five confirmed swing pivots."""
+    """Scan recent consecutive groups of five confirmed swing pivots for heuristic harmonic patterns."""
     base = {"name": "Harmonic Pattern AI Agent", "side": "WAIT", "confidence": 0,
             "pattern": "None", "status": "NO PATTERN",
-            "reason": "No valid five-pivot harmonic structure detected"}
+            "reason": "No valid five-pivot harmonic structure found in recent swings",
+            "pivots_found": 0, "groups_checked": 0}
     if df is None or df.empty or not {"High", "Low"}.issubset(df.columns):
-        base.update({"status": "NO DATA", "reason": "No candle data"})
+        base.update({"status": "NO DATA", "reason": "Missing candle data or High/Low columns"})
         return base
     pivots = _confirmed_pivots(df)
+    base["pivots_found"] = len(pivots)
     if len(pivots) < 5:
+        base.update({"status": "INSUFFICIENT SWINGS", "reason": f"Only {len(pivots)} confirmed swing pivots; need at least 5"})
         return base
-    p = pivots[-5:]
-    types = "".join(x[1] for x in p)
-    if types not in ("LHLHL", "HLHLH"):
-        return base
-    X, A, B, C, D = [x[2] for x in p]
-    xa, ab, bc, cd = abs(A-X), abs(B-A), abs(C-B), abs(D-C)
-    ad = abs(D-A)
-    if min(xa, ab, bc, cd) <= 0:
-        return base
-    r_ab_xa, r_bc_ab, r_cd_bc, r_ad_xa = ab/xa, bc/ab, cd/bc, ad/xa
-    # Ratios use tolerant zones because market swings are noisy; these are heuristics.
+
+    # Search several recent five-pivot windows rather than only the newest five.
+    # This avoids missing a valid structure merely because one newer swing invalidates it.
+    recent = pivots[-35:]
     patterns = {
-        "Gartley": (0.618, 0.786, 0.382, 0.886, 1.272, 1.618, 0.786, 0.10),
+        "Gartley": (0.618, 0.786, 0.382, 0.786, 0.382, 1.272, 0.786, 0.10),
         "Bat": (0.382, 0.500, 0.382, 0.886, 1.618, 2.618, 0.886, 0.12),
-        # r_ad_xa measures |A-D| / |X-A|. For Butterfly and Crab,
-        # D extends beyond X, so |A-D| includes the full XA leg plus
-        # the extension beyond X (1 + extension ratio).
         "Butterfly": (0.786, 0.786, 0.382, 0.886, 1.618, 2.618, 2.270, 0.13),
         "Crab": (0.382, 0.618, 0.382, 0.886, 2.240, 3.618, 2.618, 0.15),
     }
     best = None
-    for name, (ab_lo, ab_hi, bc_lo, bc_hi, cd_lo, cd_hi, ad_target, tol) in patterns.items():
-        if not (ab_lo-tol <= r_ab_xa <= ab_hi+tol and
-                bc_lo-tol <= r_bc_ab <= bc_hi+tol and
-                cd_lo-tol <= r_cd_bc <= cd_hi+tol and
-                abs(r_ad_xa-ad_target) <= tol):
+    groups_checked = 0
+    alternating_groups = 0
+    for offset in range(len(recent) - 4):
+        p = recent[offset:offset + 5]
+        groups_checked += 1
+        types = "".join(x[1] for x in p)
+        if types not in ("LHLHL", "HLHLH"):
             continue
-        # D is the last pivot; LHLHL suggests bullish reversal, HLHLH bearish reversal.
-        side = "BUY" if types == "LHLHL" else "SELL"
-        errors = [abs(r_ab_xa-min(max(r_ab_xa, ab_lo), ab_hi)),
-                  abs(r_bc_ab-min(max(r_bc_ab, bc_lo), bc_hi)),
-                  abs(r_cd_bc-min(max(r_cd_bc, cd_lo), cd_hi)),
-                  abs(r_ad_xa-ad_target)]
-        confidence = int(round(max(60, min(90, 90 - 100*sum(errors)))))
-        candidate = (confidence, name, side)
-        if best is None or candidate[0] > best[0]:
-            best = candidate
+        alternating_groups += 1
+        X, A, B, C, D = [x[2] for x in p]
+        xa, ab, bc, cd = abs(A-X), abs(B-A), abs(C-B), abs(D-C)
+        if min(xa, ab, bc, cd) <= 0:
+            continue
+        r_ab_xa, r_bc_ab, r_cd_bc, r_ad_xa = ab/xa, bc/ab, cd/bc, abs(D-A)/xa
+        for name, (ab_lo, ab_hi, bc_lo, bc_hi, cd_lo, cd_hi, ad_target, tol) in patterns.items():
+            # Gartley and Bat use retracement D targets; Butterfly and Crab use
+            # the absolute A-to-D/XA ratio because D extends beyond X.
+            if not (ab_lo-tol <= r_ab_xa <= ab_hi+tol and
+                    bc_lo-tol <= r_bc_ab <= bc_hi+tol and
+                    cd_lo-tol <= r_cd_bc <= cd_hi+tol and
+                    abs(r_ad_xa-ad_target) <= tol):
+                continue
+            side = "BUY" if types == "LHLHL" else "SELL"
+            errors = [abs(r_ab_xa-min(max(r_ab_xa, ab_lo), ab_hi)),
+                      abs(r_bc_ab-min(max(r_bc_ab, bc_lo), bc_hi)),
+                      abs(r_cd_bc-min(max(r_cd_bc, cd_lo), cd_hi)),
+                      abs(r_ad_xa-ad_target)]
+            confidence = int(round(max(60, min(90, 90 - 100*sum(errors)))))
+            candidate = (confidence, name, side, p[-1][0])
+            if best is None or candidate[0] > best[0] or (candidate[0] == best[0] and candidate[3] > best[3]):
+                best = candidate
+    base["groups_checked"] = groups_checked
     if best is None:
+        if alternating_groups == 0:
+            base.update({"status": "NO ALTERNATING SWINGS", "reason": f"Checked {groups_checked} five-pivot groups; none had alternating highs and lows"})
+        else:
+            base.update({"status": "RATIOS NOT MATCHED", "reason": f"Checked {groups_checked} groups; {alternating_groups} had alternating swings, but no pattern ratios matched"})
         return base
-    confidence, name, side = best
+    confidence, name, side, _ = best
     return {"name": "Harmonic Pattern AI Agent", "side": side, "confidence": confidence,
             "pattern": name, "status": "PATTERN CANDIDATE",
-            "reason": f"Heuristic {name} ratios matched; requires independent validation"}
+            "reason": f"Heuristic {name} ratios matched in a recent five-pivot window; requires independent validation",
+            "pivots_found": len(pivots), "groups_checked": groups_checked}
+
