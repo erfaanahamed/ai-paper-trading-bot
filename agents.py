@@ -102,8 +102,11 @@ def harmonic_pattern_agent(df: pd.DataFrame) -> dict:
     patterns = {
         "Gartley": (0.618, 0.786, 0.382, 0.886, 1.272, 1.618, 0.786, 0.10),
         "Bat": (0.382, 0.500, 0.382, 0.886, 1.618, 2.618, 0.886, 0.12),
-        "Butterfly": (0.786, 0.786, 0.382, 0.886, 1.618, 2.618, 1.270, 0.13),
-        "Crab": (0.382, 0.618, 0.382, 0.886, 2.240, 3.618, 1.618, 0.15),
+        # r_ad_xa measures |A-D| / |X-A|. For Butterfly and Crab,
+        # D extends beyond X, so |A-D| includes the full XA leg plus
+        # the extension beyond X (1 + extension ratio).
+        "Butterfly": (0.786, 0.786, 0.382, 0.886, 1.618, 2.618, 2.270, 0.13),
+        "Crab": (0.382, 0.618, 0.382, 0.886, 2.240, 3.618, 2.618, 0.15),
     }
     best = None
     for name, (ab_lo, ab_hi, bc_lo, bc_hi, cd_lo, cd_hi, ad_target, tol) in patterns.items():

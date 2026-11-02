@@ -1,0 +1,11 @@
+HARMONIC PATTERN AGENT FIX
+
+Corrected the D-point XA-distance targets for Butterfly and Crab.
+The detector computes r_ad_xa = abs(D - A) / abs(X - A). Since Butterfly
+and Crab D points extend beyond X, the corresponding absolute A-to-D ratios
+are 1 + 1.270 = 2.270 for Butterfly and 1 + 1.618 = 2.618 for Crab.
+
+This is a calculation correction, not evidence of a profitable strategy.
+The detector still requires further validation using known historical pattern
+examples and actual candle data across all configured markets/timeframes.
+No live market test or profitability claim is made.
