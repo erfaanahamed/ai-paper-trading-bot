@@ -1078,6 +1078,36 @@ def _telegram_credentials():
     return token.strip(), chat_id.strip()
 
 
+def _send_telegram_message(token, chat_id, message):
+    """Send one Telegram message and return a safe, human-readable status."""
+    if not token or not chat_id:
+        return False, "Not configured: add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to Streamlit Secrets."
+    try:
+        response = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            data={"chat_id": chat_id, "text": message}, timeout=10
+        )
+        try:
+            payload = response.json()
+        except Exception:
+            payload = {}
+        if response.ok and payload.get("ok"):
+            return True, "Sent successfully."
+        description = str(payload.get("description", "Telegram API rejected the request"))[:220]
+        code = payload.get("error_code", response.status_code)
+        if code == 401:
+            hint = "Check the bot token; it may be invalid or revoked."
+        elif code == 400:
+            hint = "Check the chat ID and make sure you pressed Start and sent the bot a message."
+        elif code == 403:
+            hint = "Open the bot in Telegram and press Start; also check whether the bot was blocked."
+        else:
+            hint = "Check the Telegram settings and try again."
+        return False, f"Telegram error {code}: {description}. {hint}"
+    except requests.RequestException as exc:
+        return False, f"Network error while contacting Telegram ({type(exc).__name__}). Check app connectivity."
+
+
 def notify_trade_opened(position):
     """Create a persistent dashboard alert and send Telegram if configured."""
     if "trade_notifications" not in st.session_state:
@@ -1103,14 +1133,8 @@ def notify_trade_opened(position):
     st.session_state.trade_notifications.insert(0, item)
     st.session_state.trade_notifications = st.session_state.trade_notifications[:100]
     token, chat_id = _telegram_credentials()
-    if token and chat_id:
-        try:
-            response = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                                     data={"chat_id": chat_id, "text": msg}, timeout=5)
-            response.raise_for_status()
-            item["telegram"] = "Sent" if response.json().get("ok") else "Failed: Telegram API rejected message"
-        except Exception as exc:
-            item["telegram"] = f"Failed: {type(exc).__name__}"
+    ok, status = _send_telegram_message(token, chat_id, msg)
+    item["telegram"] = status
 
 
 def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, threshold,
@@ -2056,7 +2080,15 @@ for ev in st.session_state.get("last_auto_events", []):
 with st.expander("🔔 Trade execution notifications", expanded=True):
     tg_token, tg_chat_id = _telegram_credentials()
     if not (tg_token and tg_chat_id):
-        st.info("Dashboard alerts are enabled. To enable Telegram, add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to Streamlit app Secrets, then redeploy.")
+        st.warning("Telegram is not configured. Add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to Streamlit app Secrets, then redeploy.")
+    else:
+        if st.button("📨 Send Telegram test message", key="telegram_test_message"):
+            test_text = "✅ AI BRAIN V7 Telegram test successful. Trade notifications are configured. This is a test message, not a trade signal."
+            tg_ok, tg_status = _send_telegram_message(tg_token, tg_chat_id, test_text)
+            if tg_ok:
+                st.success(tg_status)
+            else:
+                st.error(tg_status)
     notifications = st.session_state.get("trade_notifications", [])
     if notifications:
         for item in notifications[:10]:
