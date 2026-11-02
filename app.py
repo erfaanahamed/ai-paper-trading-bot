@@ -1,4 +1,5 @@
 import math
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, date, timedelta
 from zoneinfo import ZoneInfo
 import numpy as np
@@ -322,6 +323,7 @@ def current_global_sessions(now_utc=None):
         rows.append({"Session": name, "Status": "OPEN" if is_open else "CLOSED", "Local time": local.strftime("%H:%M"), "Session hours": f"{start_hour:02d}:00–{end_hour:02d}:00 local"})
     return pd.DataFrame(rows)
 
+@st.cache_data(ttl=90, show_spinner=False)
 def download_data(symbol, interval):
     yf_interval, period = INTERVAL_MAP[interval]
     try:
@@ -915,29 +917,46 @@ def scan_all_market_signals():
 
 
 def scan_all_market_timeframe_votes():
-    """Build one independent vote-analysis row per configured market and entry timeframe.
+    """Build independent vote rows, fetching unique symbol/timeframe candles concurrently.
 
-    This is a diagnostic scan only: it does not open trades. The 1H data is used
-    only as trend context for each 5m/15m/30m row.
+    Cached candle downloads prevent the diagnostic table from blocking every 30-second
+    Streamlit rerun with a fresh batch of provider requests. This scan is diagnostic only.
     """
     rows = []
     trades = st.session_state.get("trades", load_trade_log())
+    requests_to_fetch = {}
     for market_name, cfg in MARKETS.items():
         symbol = cfg["symbol"]
-        # Reuse the same higher-timeframe context for all three entry timeframes.
+        requests_to_fetch[(symbol, "1h")] = None
+        for timeframe in cfg.get("allowed_tfs", ["5m", "15m", "30m"]):
+            requests_to_fetch[(symbol, timeframe)] = None
+
+    # Fetch distinct candle sets in parallel so the expander doesn't appear stuck
+    # while waiting for 40 sequential Yahoo Finance requests.
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        future_map = {pool.submit(download_data, symbol, tf): (symbol, tf)
+                      for symbol, tf in requests_to_fetch}
+        for future in as_completed(future_map):
+            key = future_map[future]
+            try:
+                requests_to_fetch[key] = future.result()
+            except Exception:
+                requests_to_fetch[key] = pd.DataFrame()
+
+    for market_name, cfg in MARKETS.items():
+        symbol = cfg["symbol"]
+        htf_raw = requests_to_fetch.get((symbol, "1h"), pd.DataFrame())
         try:
-            htf_raw = download_data(symbol, "1h")
-            htf = add_adaptive_levels(add_indicators(htf_raw), "1h") if not htf_raw.empty else pd.DataFrame()
+            htf = add_adaptive_levels(add_indicators(htf_raw), "1h") if htf_raw is not None and not htf_raw.empty else pd.DataFrame()
             bias, _ = htf_bias(htf) if not htf.empty else ("Unknown", None)
         except Exception:
-            htf = pd.DataFrame()
             bias = "Unknown"
 
         for timeframe in cfg.get("allowed_tfs", ["5m", "15m", "30m"]):
             base = {"Market": market_name, "Symbol": symbol, "Timeframe": timeframe, "1H trend": bias}
             try:
-                raw = download_data(symbol, timeframe)
-                if raw.empty or len(raw) < 60:
+                raw = requests_to_fetch.get((symbol, timeframe), pd.DataFrame())
+                if raw is None or raw.empty or len(raw) < 60:
                     rows.append({**base, "BUY votes": None, "SELL votes": None,
                                  "Active vote agreement (%)": None, "Directional vote strength (%)": None,
                                  "Decision": "DATA UNAVAILABLE", "Reason": "Insufficient candles or provider returned no data"})
@@ -1801,7 +1820,7 @@ else:
 
 with st.expander("🤖 Multi-Strategy AI Agent — all-market vote analysis", expanded=True):
     st.write("Each row is calculated independently for one market and one entry timeframe. The 1H timeframe is trend context only; entries are analyzed on 5m, 15m and 30m. This table is diagnostic and does not place trades.")
-    with st.spinner("Calculating votes for all configured markets and entry timeframes..."):
+    with st.spinner("Loading cached candles and calculating votes for all markets/timeframes..."):
         all_tf_votes = scan_all_market_timeframe_votes()
     if not all_tf_votes.empty:
         display_cols = ["Market", "Symbol", "Timeframe", "1H trend", "BUY votes", "SELL votes",
