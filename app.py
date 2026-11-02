@@ -12,6 +12,28 @@ import json
 import os
 from pathlib import Path
 import requests
+
+# Keep the dashboard controls visually stable during Streamlit's periodic reruns.
+# Streamlit marks the app stale while a rerun is in progress; its default styling
+# can fade the whole page, including buttons, which looks like the buttons are disabled.
+st.markdown("""
+<style>
+/* Do not fade controls while the script is refreshing. */
+[data-stale="true"],
+[data-stale="true"] [data-testid="stAppViewContainer"],
+[data-stale="true"] [data-testid="stAppViewBlockContainer"] {
+    opacity: 1 !important;
+    filter: none !important;
+}
+/* Keep button contrast consistent across refreshes. */
+.stButton > button,
+.stDownloadButton > button,
+[data-testid="stFormSubmitButton"] > button {
+    opacity: 1;
+    transition: none !important;
+}
+</style>
+""", unsafe_allow_html=True)
 try:
     from trading_engine.agents import chart_analysis_agent, harmonic_pattern_agent
 except ModuleNotFoundError:

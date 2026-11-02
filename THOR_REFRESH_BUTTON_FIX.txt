@@ -1,0 +1,3 @@
+THOR AI dashboard refresh appearance fix
+
+This update adds CSS to prevent Streamlit's stale/rerun styling from fading dashboard controls during periodic app reruns. The 30-second rerun and paper-trading logic are unchanged. Buttons can still be temporarily busy while the server is executing a rerun; this patch addresses the visual dimming effect, not server latency or hosting sleep.
