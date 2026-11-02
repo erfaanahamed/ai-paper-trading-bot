@@ -9,6 +9,7 @@ import yfinance as yf
 import plotly.graph_objects as go
 from streamlit_autorefresh import st_autorefresh
 import json
+import os
 from pathlib import Path
 import requests
 try:
@@ -1066,6 +1067,52 @@ def cost_adjusted_breakeven(entry, side, cost_bps=DEFAULT_ESTIMATED_COST_BPS):
     return entry + buffer if str(side).upper() == "BUY" else entry - buffer
 
 
+def _telegram_credentials():
+    """Read Telegram credentials from Streamlit secrets or environment variables."""
+    token, chat_id = os.environ.get("TELEGRAM_BOT_TOKEN", ""), os.environ.get("TELEGRAM_CHAT_ID", "")
+    try:
+        token = token or str(st.secrets.get("TELEGRAM_BOT_TOKEN", ""))
+        chat_id = chat_id or str(st.secrets.get("TELEGRAM_CHAT_ID", ""))
+    except Exception:
+        pass
+    return token.strip(), chat_id.strip()
+
+
+def notify_trade_opened(position):
+    """Create a persistent dashboard alert and send Telegram if configured."""
+    if "trade_notifications" not in st.session_state:
+        st.session_state.trade_notifications = []
+    key = f"{position.get('Opened')}|{position.get('Market')}|{position.get('Side')}"
+    seen = st.session_state.setdefault("trade_notification_keys", set())
+    if key in seen:
+        return
+    seen.add(key)
+    msg = (
+        "🔔 AI BRAIN V7 — PAPER TRADE OPENED\\n"
+        f"Market: {position.get('Market', 'Unknown')} ({position.get('Symbol', '')})\\n"
+        f"Action: {position.get('Side', '')} | Timeframe: {position.get('Timeframe', '')}\\n"
+        f"Entry: {float(position.get('Entry', 0)):.5f}\\n"
+        f"Stop Loss: {float(position.get('Stop', 0)):.5f}\\n"
+        f"TP1: {float(position.get('TP1', 0)):.5f} | TP2: {float(position.get('TP2', 0)):.5f}\\n"
+        f"Confidence score: {position.get('ConfidenceScore', position.get('Score', 'N/A'))}%\\n"
+        "Mode: PAPER TRADING | Status: OPEN\\n"
+        f"Time: {position.get('Opened', datetime.now().isoformat(timespec='seconds'))}"
+    )
+    item = {"time": datetime.now().isoformat(timespec="seconds"), "market": position.get("Market", ""),
+            "side": position.get("Side", ""), "message": msg, "telegram": "Not configured"}
+    st.session_state.trade_notifications.insert(0, item)
+    st.session_state.trade_notifications = st.session_state.trade_notifications[:100]
+    token, chat_id = _telegram_credentials()
+    if token and chat_id:
+        try:
+            response = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                                     data={"chat_id": chat_id, "text": msg}, timeout=5)
+            response.raise_for_status()
+            item["telegram"] = "Sent" if response.json().get("ok") else "Failed: Telegram API rejected message"
+        except Exception as exc:
+            item["telegram"] = f"Failed: {type(exc).__name__}"
+
+
 def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, threshold,
                              risk_pct, rr2, balance, trades_today, max_trades_per_day,
                              daily_start_balance, max_daily_loss_pct, open_positions, allow_new_entries=True):
@@ -1329,6 +1376,7 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
 
                 open_positions.append(pos)
                 trades_today += 1
+                notify_trade_opened(pos)
                 events.append(f"Automatically opened paper {side} on {market_name} at {entry:.5f}; selected strategies: {', '.join(k for k,v in active_votes.items() if v == side)}.")
             else:
                 events.append("Signal rejected: stop distance was zero.")
@@ -1991,10 +2039,8 @@ if auto_refresh_count > st.session_state.auto_last_refresh_count:
     st.session_state.auto_last_refresh_count = auto_refresh_count
     if st.session_state.auto_bot_status == "RUNNING":
         run_all_market_scan(allow_new_entries=True)
-        st.rerun()
     elif st.session_state.auto_bot_status == "PAUSED":
         run_all_market_scan(allow_new_entries=False)
-        st.rerun()
 # STOPPED disables automatic scans; the dashboard may still rerun for display.
 
 if st.button("🔎 Scan & manage positions now", type="primary",
@@ -2006,6 +2052,18 @@ if st.session_state.get("last_auto_message"):
     st.info(st.session_state.last_auto_message)
 for ev in st.session_state.get("last_auto_events", []):
     st.write("• " + ev)
+
+with st.expander("🔔 Trade execution notifications", expanded=True):
+    tg_token, tg_chat_id = _telegram_credentials()
+    if not (tg_token and tg_chat_id):
+        st.info("Dashboard alerts are enabled. To enable Telegram, add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to Streamlit app Secrets, then redeploy.")
+    notifications = st.session_state.get("trade_notifications", [])
+    if notifications:
+        for item in notifications[:10]:
+            st.markdown(f"**{item['time']} — {item['market']} {item['side']}** · Telegram: {item.get('telegram', 'Not configured')}")
+            st.code(item["message"], language=None)
+    else:
+        st.caption("No trade opened yet. An alert is created only after a paper position is actually opened.")
 
 st.markdown(f"**Open automatic paper positions — all markets ({len([p for p in st.session_state.auto_open_positions if p.get('Status', 'OPEN') == 'OPEN'])}/{MAX_GLOBAL_OPEN_POSITIONS} global limit)**")
 all_open_positions = [
@@ -2145,20 +2203,29 @@ if st.session_state.trades:
 else:
     st.info("No paper trades recorded yet. When a setup passes the filters, use the Record button to add it to the log.")
 
-with st.expander("Backtest (historical, simplified)"):
+with st.expander("Backtest (historical, simplified)", expanded=True):
     st.warning("Backtest is approximate and educational: no spread, commissions, swaps, funding, broker contract specs, or realistic slippage. Intrabar stop/target ordering is conservative, but this is not a substitute for a proper event-driven backtester.")
-    bt_period = st.selectbox("Backtest range (based on available Yahoo candles)", ["Current loaded history"], index=0)
-    cost_bps = st.slider("Estimated round-trip costs (basis points of price × units)", 0.0, 20.0, 2.0, 0.5)
-    if st.button("Run backtest"):
-        bt, final_balance, err = run_backtest(raw, htf, signal_tf, htf_tf, score_threshold, risk_pct, rr2, float(st.session_state.starting_balance_applied), max_daily_loss, cost_bps)
-        diagnostics = diagnose_backtest_filters(raw, htf, signal_tf, htf_tf, score_threshold, max_daily_loss)
+    st.selectbox("Backtest range (based on available Yahoo candles)", ["Current loaded history"], index=0, key="bt_period")
+    cost_bps = st.slider("Estimated round-trip costs (basis points of price × units)", 0.0, 20.0, 2.0, 0.5, key="bt_cost_bps")
+    if "backtest_result" not in st.session_state:
+        st.session_state.backtest_result = None
+    if st.button("Run backtest", key="run_backtest_button"):
+        with st.spinner("Running historical backtest… keep this page open until it finishes."):
+            bt, final_balance, err = run_backtest(raw, htf, signal_tf, htf_tf, score_threshold, risk_pct, rr2, float(st.session_state.starting_balance_applied), max_daily_loss, cost_bps)
+            diagnostics = diagnose_backtest_filters(raw, htf, signal_tf, htf_tf, score_threshold, max_daily_loss)
+            st.session_state.backtest_result = {"trades": bt, "final_balance": final_balance, "error": err,
+                "diagnostics": diagnostics, "run_at": datetime.now().isoformat(timespec="seconds")}
+    result = st.session_state.get("backtest_result")
+    if result:
+        st.caption(f"Backtest result stored at {result['run_at']}; results persist across automatic dashboard refreshes in this session.")
         st.subheader("Backtest diagnostics")
-        st.caption("Counts explain why bars were skipped or rejected. They are diagnostic counts, not independent trades, and do not change the strategy rules.")
-        st.dataframe(diagnostics, hide_index=True, use_container_width=True)
-        if err:
-            st.error(err)
+        st.caption("Counts explain why bars were skipped or rejected. They are diagnostic counts, not independent trades.")
+        st.dataframe(result["diagnostics"], hide_index=True, use_container_width=True)
+        bt = result["trades"]
+        if result["error"]:
+            st.error(result["error"])
         elif bt.empty:
-            st.warning("No trades passed the filters in the loaded history. Use the diagnostics above to identify the main blocker.")
+            st.warning("No trades passed the filters in the loaded history. Review the diagnostics above.")
         else:
             wins = (bt["PnL (price units)"] > 0).sum()
             win_rate = 100*wins/len(bt)
@@ -2166,19 +2233,18 @@ with st.expander("Backtest (historical, simplified)"):
             gross_loss = abs(bt.loc[bt["PnL (price units)"]<0,"PnL (price units)"].sum())
             pf = gross_profit/gross_loss if gross_loss else np.inf
             x1,x2,x3,x4 = st.columns(4)
-            x1.metric("Trades", len(bt))
-            x2.metric("Win rate", f"{win_rate:.1f}%")
+            x1.metric("Trades", len(bt)); x2.metric("Win rate", f"{win_rate:.1f}%")
             x3.metric("Profit factor", f"{pf:.2f}" if np.isfinite(pf) else "∞")
-            x4.metric("Final simulated balance (USD proxy)", f"${final_balance:,.2f}")
-            equity = bt["Balance"]
-            peak = equity.cummax()
-            drawdown = ((peak - equity) / peak.replace(0, np.nan) * 100).max() if len(equity) else 0.0
-            expectancy = bt["PnL (price units)"].mean()
+            x4.metric("Final simulated balance (USD proxy)", f"${result['final_balance']:,.2f}")
+            equity = bt["Balance"]; peak = equity.cummax()
+            drawdown = ((peak-equity)/peak.replace(0,np.nan)*100).max() if len(equity) else 0.0
             x5,x6 = st.columns(2)
             x5.metric("Max drawdown (trade-equity proxy)", f"{drawdown:.2f}%")
-            x6.metric("Average P&L / trade (price units)", f"{expectancy:.5f}")
+            x6.metric("Average P&L / trade (price units)", f"{bt['PnL (price units)'].mean():.5f}")
             st.dataframe(bt.iloc[::-1], use_container_width=True)
-            st.download_button("Download backtest CSV", bt.to_csv(index=False).encode("utf-8"), "backtest_results.csv", "text/csv")
+            st.download_button("Download backtest CSV", bt.to_csv(index=False).encode("utf-8"), "backtest_results.csv", "text/csv", key="download_backtest_csv")
+    else:
+        st.caption("No backtest results yet. Press Run backtest; results will remain visible across dashboard refreshes.")
 
 st.divider()
 st.caption("Important: this version is paper-only. No broker API, exchange API, wallet, private key, or live trading is connected. Validate data quality and out-of-sample performance before considering any real-money use.")

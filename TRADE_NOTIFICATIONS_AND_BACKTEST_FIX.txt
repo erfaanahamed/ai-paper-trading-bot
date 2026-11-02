@@ -1,0 +1,28 @@
+AI BRAIN V7 — BACKTEST PERSISTENCE + TRADE NOTIFICATIONS
+
+CHANGES
+1. Backtest output is stored in Streamlit session state and remains visible across the 30-second dashboard refreshes in the same browser session.
+2. Removed the unnecessary st.rerun() calls after timer-triggered scans so the current script can finish rendering; this reduces the chance that a timer scan prevents the page from reaching the Backtest section.
+3. Added a Trade execution notifications panel. It records each newly opened automatic paper position and shows entry, SL, TP1, TP2, timeframe, score, timestamp and Telegram delivery status.
+4. Optional Telegram messages are sent only after an automatic paper position is successfully opened. The bot does not send a message for a mere BUY/SELL signal or a rejected entry.
+
+TELEGRAM SETUP (Streamlit Community Cloud)
+1. Create a Telegram bot using the official @BotFather and copy its bot token. Keep the token private.
+2. Open your Telegram bot and press Start. Send a message to it.
+3. Obtain your chat ID using a trusted Telegram bot/API method. Never share your bot token publicly.
+4. In Streamlit Cloud, open your app settings and add these values under Secrets:
+   TELEGRAM_BOT_TOKEN = "your_bot_token"
+   TELEGRAM_CHAT_ID = "your_numeric_chat_id"
+5. Save/reboot or redeploy the app. The dashboard panel should then show Telegram status for each newly opened paper trade.
+6. If credentials are not configured, dashboard notifications still work in the current Streamlit session; Telegram status says Not configured.
+
+SECURITY
+- Do not paste Telegram token or chat ID into app.py or a public GitHub file.
+- If a token is accidentally published, revoke it with @BotFather and create a new one.
+- Telegram delivery needs internet access and valid credentials. A delivery failure is shown in the notification panel.
+- Notifications are for paper trades; this project remains paper-only.
+
+LIMITATIONS
+- Backtest results are preserved in the current Streamlit browser session, not as a permanent server database. If the session is reset or the app is restarted, those results may be lost.
+- A backtest runs synchronously. Keep the page open until the spinner disappears.
+- This is not a live broker execution integration.
