@@ -194,7 +194,7 @@ try:
 except Exception:
     SKLEARN_AVAILABLE = False
 
-st.set_page_config(page_title="AI Paper Trading Brain", page_icon="🧠", layout="wide")
+st.set_page_config(page_title="AI Paper Trading Brain", page_icon="⚡", layout="wide")
 
 # -----------------------------
 # Configuration / data helpers
@@ -1595,7 +1595,7 @@ def run_backtest(df, htf, timeframe, htf_timeframe, threshold, risk_pct, rr2, st
 # -----------------------------
 # UI
 # -----------------------------
-st.title("🧠 AI Brain — Paper Trading Lab")
+st.title("⚡ AI Brain — Paper Trading Lab")
 st.caption("Multi-strategy paper-trading research engine with trend, mean-reversion, breakout, momentum, range, volatility-expansion, price-action and liquidity-sweep proxy strategies. Paper trading only; no broker, wallet, or live-order connection.")
 with st.sidebar:
     st.header("Bot settings")
@@ -1848,7 +1848,7 @@ else:
 
 st.divider()
 st.subheader(f"📊 Detailed chart and indicators: {market_name}")
-with st.expander("🧠 Multi-strategy engine: strategy votes & market regime", expanded=True):
+with st.expander("⚡ Multi-strategy engine: strategy votes & market regime", expanded=True):
     st.write("The engine evaluates multiple rule-based strategy families, including optional SMC confluence, detects a broad market regime, then selects up to three strategies per symbol/timeframe. It uses closed-trade outcomes recorded for that exact market and timeframe when enough examples exist; otherwise it uses regime-based priors during warm-up. At least two selected strategies must agree. This is adaptive research logic, not literally every strategy worldwide. Live news trading is not active without an economic-calendar/news feed.")
     if not overview.empty:
         cols = [c for c in ["Market", "Signal", "Market regime", "Strategy BUY votes", "Strategy SELL votes", "Selected strategies", "Selection mode", "Data status"] if c in overview.columns]
@@ -1929,7 +1929,7 @@ with st.expander("🧩 SMC detector — Order Blocks, BOS, CHOCH, FVG & Liquidit
     st.dataframe(data[smc_cols].tail(12), use_container_width=True)
     st.caption("SMC zones are rule-based OHLC heuristics, not proof of institutional orders. BOS/CHOCH and zones can be noisy; validate them on unseen data before relying on them.")
 
-with st.expander("🧠 Self-learning engine — trade outcomes + machine learning", expanded=True):
+with st.expander("⚡ Self-learning engine — trade outcomes + machine learning", expanded=True):
     l1, l2, l3 = st.columns(3)
     l1.metric("Completed learning trades", learning["closed_samples"])
     l2.metric("Recent win rate", f"{learning['recent_win_rate']:.1%}" if learning["recent_win_rate"] is not None else "Not enough data")
