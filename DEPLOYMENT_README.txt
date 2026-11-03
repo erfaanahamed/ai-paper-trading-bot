@@ -1,29 +1,23 @@
-AI BRAIN V7 — DEPLOYMENT FIX V2
+HERMES AI AGENT — CLEAN ROOT DEPLOYMENT PACKAGE
 
-FIX INCLUDED
-- app.py now checks the normal repository-root package path and one-level nested path.
-- If trading_engine is truly missing from the deployed GitHub repository, it displays a clear action message.
-- 30-minute pre-close and post-open protection settings remain ON by default.
-- Saturday/Sunday no-new-entry protection remains ON by default, including crypto.
+IMPORTANT: The ZIP is arranged with app.py, requirements.txt, runtime.txt,
+.streamlit/, and trading_engine/ directly at the archive root.
+Do NOT upload the outer ZIP folder as a nested directory.
 
-IMPORTANT DIAGNOSIS
-The screenshot's line-12 ModuleNotFoundError means Streamlit ran app.py but could not find trading_engine/__init__.py at the expected location. A ZIP download alone does not update GitHub. The files must be committed to the same repository/branch used by Streamlit.
+GitHub update (Android):
+1. Back up/download the current repository first.
+2. Extract this ZIP.
+3. Upload/replace the CONTENTS of the extracted folder into the repository ROOT.
+4. Confirm app.py, requirements.txt, runtime.txt, .streamlit/ and trading_engine/
+   are visible at the same repository root level.
+5. Commit to branch main (the Streamlit log showed branch main).
+6. Streamlit Manage app > Settings: Main file path must be app.py.
+7. Save, then Reboot app. Wait for dependency installation to finish.
 
-DEPLOY STEPS (ANDROID)
-1. Download and extract this ZIP.
-2. In GitHub, open the exact repository used by Streamlit.
-3. Upload the CONTENTS of this ZIP to the repository root; do not upload the ZIP as a single file. Preserve the trading_engine/ folder and its __init__.py file.
-4. Commit the changes to the branch configured in Streamlit.
-5. In Streamlit Manage app, confirm Main file path is app.py, then reboot.
-6. If the error remains, verify the commit appears in GitHub and send a screenshot of the repository root file list.
+The supplied deployment log showed dependencies installed and the Uvicorn
+server started; it did NOT contain a Python traceback. It also showed Python
+3.14.10, although this package requests Python 3.12. If Streamlit continues
+using 3.14, verify runtime.txt is at repository ROOT and check the app's
+Python-version setting in Streamlit Cloud before rebooting.
 
-EXPECTED ROOT
-app.py
-requirements.txt
-trading_engine/__init__.py
-trading_engine/app.py
-trading_engine/runner.py
-trading_engine/state.py
-trading_engine_data/
-
-RESEARCH/PAPER TRADING ONLY. No broker connection or real-money orders are included. Market session estimates must be checked against the intended broker's actual sessions.
+Paper-trading only. Do not connect real-money execution.
