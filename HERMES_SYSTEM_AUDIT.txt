@@ -1,0 +1,44 @@
+HERMES AI AGENT — COMPLETE SYSTEM AUDIT
+Build date: 2026-11-03
+Source inspected: HERMES_AI_AGENT_IMPORT_FIXED.zip from the user's Library.
+
+USER-REQUESTED CONFIGURATION
+- Chart Analysis AI Agent is the only dedicated chart-analysis agent.
+- Harmonic Pattern AI Agent is removed from executable code, imports, votes, dashboard panels, scan tables, event messages and tests.
+- SMC and the simplified liquidity-sweep proxy are removed from active strategy logic.
+- Paper trading only; no broker/wallet/live-order routing.
+
+VALIDATION
+- Python compileall: PASS.
+- Automated test suite: 36 passed.
+- Active Python source scan for harmonic agent / SMC / liquidity-sweep proxy: PASS; no such active code references remain.
+- Full Streamlit launch: NOT RUN. Streamlit, yfinance and streamlit-autorefresh are not installed in this audit environment.
+- Streamlit Cloud deployment: NOT VERIFIED.
+- Telegram send test: NOT VERIFIED; the user's Streamlit Secrets and Telegram chat are not accessible from this audit environment.
+
+COMPONENT REVIEW
+1. Chart Analysis AI Agent: present and called in all-market scanning and automatic paper-entry decision flow. It checks EMA9/21/50 alignment, close vs EMA200, ADX/+DI/-DI, RSI and optional higher-timeframe bias. Its confidence is a heuristic agreement score, not a win probability.
+2. Multi-strategy engine: seven active rule families remain: trend following, mean reversion, breakout, momentum, range trading, volatility expansion and price action. The engine requires multiple aligned directional votes and a directional-strength gate.
+3. Self-learning engine: trains only from completed paper trades; configured minimum is 300 feature-rich closed trades and at least 50 wins and 50 losses. A candidate must pass chronological holdout validation before promotion. This does not prove future profitability.
+4. Self-learning AI Agent: advisory/diagnostic layer; no order-execution authority and no automatic strategy-rule rewrite.
+5. Risk / paper execution: dashboard has per-trade risk sizing, max trades/day, duplicate-market protection and a global cap of five open automatic paper positions. The system remains a price-based simulator, not broker-contract-aware execution.
+6. Market/news protection: session and high-impact-news gates are present in the dashboard flow. Data/calendar availability and timing still require live deployment verification.
+7. Telegram: credentials are read from Streamlit Secrets/environment; test-message UI exists. Delivery cannot be confirmed until the user configures secrets and clicks the test button in the deployed app.
+8. Backtesting: the dashboard routes through trading_engine.backtest and the seven-family signal path, with next-bar-open entries. It is still a simplified simulator.
+
+IMPORTANT FINDINGS / LIMITATIONS
+- trading_engine/backtest.py accepts htf_df but does not use it; historical backtest signals therefore do not include the live 1H bias filter.
+- The backtest computes feature/label objects that are not used by its signal or trade outcome logic.
+- The backtest does not fully reproduce the live dashboard's session/news gates, portfolio-wide open-position cap, broker-specific sizing, partial TP1 handling and full ATR trailing behavior. It should not be treated as a full replay of live paper execution.
+- The backtest uses approximate costs and price-unit sizing. Yahoo Finance tickers are proxies (for example futures proxies for metals/oil), not exact broker contracts or guaranteed real-time prices.
+- Root dashboard and research package have separate execution paths. Passing unit tests does not prove the Streamlit UI, hosting, data vendor, or Telegram integration works end to end.
+- The chart agent is deterministic rule-based code, not an external LLM/Hermes runtime. The package README should not be interpreted as proof that an external Hermes service is connected.
+- The directional vote-strength score and chart-agent confidence are not calibrated win probabilities. Do not infer a win rate from them.
+
+RECOMMENDED NEXT VALIDATION
+1. Upload the ZIP contents to the existing GitHub repository root, replacing the corresponding files.
+2. Confirm Streamlit Cloud redeploys without import errors.
+3. In the deployed app, confirm the Analysis Agents section shows only Chart Analysis AI Agent and no harmonic columns/votes.
+4. Run a paper backtest separately for every configured market and 5m/15m/30m timeframe; save the trade-level CSV and inspect costs, drawdown, profit factor and out-of-sample results.
+5. Configure Telegram secrets in Streamlit only, then press Send Telegram test message. Never share the token in chat or GitHub.
+6. Continue paper-only forward testing before considering any real-money deployment.

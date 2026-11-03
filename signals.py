@@ -1,5 +1,5 @@
 import numpy as np,pandas as pd
-STRATEGIES=["Trend following","Mean reversion","Breakout","Momentum","Range trading","Volatility expansion","Price action","Liquidity sweep (proxy)"]
+STRATEGIES=["Trend following","Mean reversion","Breakout","Momentum","Range trading","Volatility expansion","Price action"]
 def _regime(r):
     adx=r.get("ADX",np.nan); close=r.get("Close",np.nan); mid=r.get("BB_Mid",np.nan); up=r.get("BB_Upper",np.nan); lo=r.get("BB_Lower",np.nan)
     if pd.notna(adx) and adx>=25:return "TRENDING"
@@ -34,9 +34,6 @@ def evaluate_multi_strategy(last,bias="Unknown"):
         body=abs(c-o); cp=(c-l)/(h-l)
         if c>o and body/(h-l)>=.6 and cp>=.8 and c>e21:v[STRATEGIES[6]]="BUY"
         elif c<o and body/(h-l)>=.6 and cp<=.2 and c<e21:v[STRATEGIES[6]]="SELL"
-    if all(np.isfinite(x) for x in [c,h,l,ps,pr]):
-        if l<ps and c>ps:v[STRATEGIES[7]]="BUY"
-        elif h>pr and c<pr:v[STRATEGIES[7]]="SELL"
     b=sum(x=="BUY" for x in v.values()); s=sum(x=="SELL" for x in v.values()); side="BUY" if b>=2 and b>s else "SELL" if s>=2 and s>b else "WAIT"
     return side,int(round(100*max(b,s)/len(v))),v,_regime(last),b,s
 def adaptive_strategy_selection(votes,regime,market_name,timeframe,history):
@@ -46,7 +43,7 @@ def adaptive_strategy_selection(votes,regime,market_name,timeframe,history):
     train on an older window and pass a newer chronological holdout window.
     """
     priors={"TRENDING":["Trend following","Momentum","Breakout","Price action","Volatility expansion"],
-            "RANGING":["Mean reversion","Range trading","Liquidity sweep (proxy)"],
+            "RANGING":["Mean reversion","Range trading"],
             "SQUEEZE / QUIET":["Breakout","Volatility expansion","Range trading"],
             "MIXED":["Trend following","Breakout","Mean reversion","Momentum","Price action","Range trading"]}.get(regime,STRATEGIES)
     df=pd.DataFrame(history or [])

@@ -1,3 +1,5 @@
+SUPERSEDED — historical SMC deployment note; the current build does not include SMC or smc.py.
+
 Hermes AI Agent V7 — BUTTONS NOT SHOWING FIX
 
 The three controls are in the root app.py sidebar under “Market Session Protection”.

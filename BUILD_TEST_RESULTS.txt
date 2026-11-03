@@ -1,10 +1,26 @@
-Hermes AI Agent corrected validation build
-- Python compileall: PASS
-- Automated tests: 37 passed
-- Active dashboard SMC integration: removed
-- Daily-loss halt: disabled/removed from dashboard control
-- Backtest UI: routes through trading_engine.backtest multi-strategy signal pipeline
-- Trading mode: paper only; no broker/wallet/live order routing
-- Telegram delivery: not verified; requires user secrets and in-app test message
-- Streamlit cloud deployment: not verified in this local environment
-- Backtest and confidence scores do not establish future profitability.
+Hermes AI Agent — chart-analysis-only audit build
+Build date: 2026-11-03
+
+Changes in this build:
+- Removed Harmonic Pattern AI Agent function from both agent modules.
+- Removed harmonic imports, live-scan votes, backtest-scan votes, auto-entry votes, event text, dashboard columns and dashboard panel.
+- Removed the harmonic-specific test and obsolete harmonic diagnostic/fix note files.
+- Kept Chart Analysis AI Agent as the only dedicated chart-analysis agent.
+- Kept the multi-strategy engine, adaptive learning, risk checks and paper-only execution.
+
+Validation performed after edits:
+- Python compileall: PASS.
+- Automated tests: 36 passed.
+- Active-code harmonic reference scan: PASS (no harmonic agent references remain in app/modules/tests).
+- Streamlit Cloud deployment: NOT VERIFIED.
+- Telegram delivery: NOT VERIFIED; requires user secrets and in-app test.
+
+Audit limitations / findings:
+- This package is paper-only; do not connect it to live trading.
+- The main dashboard backtest is an approximate simulator and does not reproduce all live gates, full partial-close/ATR-trailing behavior, broker contract sizing, or full portfolio exposure controls.
+- Yahoo Finance symbols are market-data proxies and may be delayed/incomplete; they are not broker feeds.
+- Directional vote strength and agent confidence are heuristic scores, not win probabilities.
+- Adaptive model promotion requires at least 300 completed feature-rich trades and at least 50 wins and 50 losses; this is a high sample threshold and no performance benefit is established here.
+- Telegram and hosted deployment need user-side verification.
+- Additional configuration audit: SMC and liquidity-sweep proxy removed from active voting.
+- Streamlit runtime import/smoke test: NOT RUN because streamlit, yfinance and streamlit-autorefresh are not installed in the audit environment.

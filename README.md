@@ -36,3 +36,9 @@ section remains the user-facing monitor.
 
 This is an integration scaffold, not proof of improved trading performance. Continue
 paper trading and validate on unseen data before any live deployment.
+
+
+## Chart-analysis agent configuration
+Only the Chart Analysis AI Agent is enabled as the dedicated chart-analysis agent. The Harmonic Pattern AI Agent has been removed from active code, votes, dashboard UI and tests. Chart-agent confidence is a heuristic agreement score, not a calibrated win probability.
+
+The active strategy ensemble excludes SMC and liquidity-sweep proxy logic.

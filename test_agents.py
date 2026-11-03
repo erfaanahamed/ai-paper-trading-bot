@@ -1,5 +1,5 @@
 import pandas as pd
-from trading_engine.agents import chart_analysis_agent, harmonic_pattern_agent
+from trading_engine.agents import chart_analysis_agent
 
 
 def test_chart_agent_reports_wait_without_data():
@@ -17,9 +17,3 @@ def test_chart_agent_can_detect_bullish_alignment():
     assert result["side"] == "BUY"
     assert result["confidence"] >= 70
 
-
-def test_harmonic_agent_handles_insufficient_data():
-    df = pd.DataFrame({"High": [2, 3, 2], "Low": [1, 2, 1]})
-    result = harmonic_pattern_agent(df)
-    assert result["side"] == "WAIT"
-    assert result["pattern"] == "None"

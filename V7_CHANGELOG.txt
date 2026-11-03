@@ -1,3 +1,5 @@
+SUPERSEDED — historical SMC deployment note; the current build does not include SMC or smc.py.
+
 AI Brain V7 — Optional SMC research module
 
 Added:

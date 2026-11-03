@@ -17,3 +17,6 @@ NEWS SOURCE UPDATE (V5): News Protection uses only Forex Factory/Fair Economy pu
 
 AGENT INTEGRATION UPDATE:
 Chart Analysis AI Agent and Harmonic Pattern AI Agent are now integrated as local rule-based components in the main Streamlit app. Their qualifying votes are added to the weighted strategy voting, and their signals/pattern/confidence are displayed in the all-market dashboard. Hermes remains unconnected. Agent confidence is heuristic and is not a calibrated win probability. Paper trading/research only.
+
+
+SUPERSEDED NOTE (2026-11-03): The historical Harmonic Pattern AI Agent integration described above has been removed from the active build. Only Chart Analysis AI Agent remains enabled.

@@ -18,3 +18,6 @@ Validation:
 - app.py passed Python syntax compilation.
 - Project tests: 40 passed with PYTHONPATH=.
 - Live Yahoo Finance data availability and Streamlit UI behavior were not tested in this offline validation environment.
+
+
+SUPERSEDED NOTE (2026-11-03): Harmonic Pattern AI Agent was subsequently removed from active votes and dashboard. Only Chart Analysis AI Agent remains as the dedicated chart-analysis agent.

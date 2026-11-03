@@ -1,3 +1,5 @@
+SUPERSEDED — historical SMC deployment note; the current build does not include SMC or smc.py.
+
 AI BRAIN V7 — STANDALONE IMPORT FIX
 
 This package uses the full standalone root app.py from the original AI Brain V7

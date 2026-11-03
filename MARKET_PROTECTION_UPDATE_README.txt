@@ -1,3 +1,5 @@
+SUPERSEDED — historical SMC deployment note; the current build does not include SMC or smc.py.
+
 AI BRAIN V7 — MARKET SESSION + WEEKEND PROTECTION UPDATE
 
 Changes in this build:

@@ -28,7 +28,7 @@ Multi-strategy engine update:
 - Added separate rule-based strategy votes for trend following, mean reversion, breakout, momentum, range trading, volatility expansion, price action, and a simplified liquidity-sweep proxy.
 - Added market regime labels (trending, ranging, squeeze/quiet, mixed) and strategy vote counts to the all-market scanner.
 - Automatic paper entries now use the ensemble: at least two aligned strategy votes and a non-tied majority are required, before the existing learning gate and risk/position checks.
-- This is a limited strategy ensemble, not literally every strategy used worldwide. SMC is represented only by a simplified liquidity-sweep proxy. News Protection uses the published Forex Factory/Fair Economy weekly calendar feed and filters strictly to red-folder (High-impact) events. The feed can fail or be incomplete; when no valid feed/cache is available, new entries are blocked while protection is ON.
+- This is a limited strategy ensemble, not literally every strategy used worldwide. SMC and liquidity-sweep proxy logic are not part of the active build. News Protection uses the published Forex Factory/Fair Economy weekly calendar feed and filters strictly to red-folder (High-impact) events. The feed can fail or be incomplete; when no valid feed/cache is available, new entries are blocked while protection is ON.
 - Backtest functions still use the legacy directional signal logic, so results from that backtest do not yet validate the new ensemble. A separate ensemble backtest and walk-forward validation are needed before assessing performance.
 
 Adaptive strategy-selection update:
@@ -60,12 +60,10 @@ V3 AUTOMATIC NEWS CALENDAR:
 NEWS SOURCE UPDATE (V5): News Protection uses only Forex Factory/Fair Economy published weekly JSON feed at https://nfs.faireconomy.media/ff_calendar_thisweek.json. Only impact="High" (red-folder) events are accepted. No ShowMyTrades, third-party calendar, or uploaded CSV fallback is used. Feed refresh interval: 15 minutes. The published feed covers the current week; a successful cached result is used if refresh fails. If no valid feed/cache exists, News Protection blocks new entries. Forex Factory notices prohibit copying/redistribution of calendar data without written consent; this bot uses the public feed for local paper-trading protection and does not republish it.
 
 
-V7 OPTIONAL SMC MODULE
+HISTORICAL V7 OPTIONAL SMC MODULE — REMOVED FROM ACTIVE BUILD
 - Optional Smart Money Concepts heuristic features: Order Blocks, BOS, CHOCH, FVG and liquidity sweeps.
-- Toggle "Use SMC confluence in decisions" in the sidebar. Other strategy families remain available when SMC has no setup.
-- SMC chart zone lines and a diagnostic panel are available in the selected-market view.
-- Strategy Discovery Lab includes an SMC candidate for chronological validation; it does not auto-promote strategies.
-- SMC definitions are algorithmic heuristics, not proof of institutional orders; paper-test and validate before relying on them.
+- Historical note only: this optional module was subsequently removed from the active build.
+- No SMC chart zones, diagnostic panel, SMC strategy candidate or liquidity-sweep proxy are enabled in the current build.
 
 
 CONFIGURATION UPDATE (confidence / 1H / global position cap):
@@ -73,13 +71,20 @@ CONFIGURATION UPDATE (confidence / 1H / global position cap):
 - Automatic entries require at least 70% directional weighted-vote alignment. This score is not a calibrated win probability and is not evidence of a 70% win rate.
 - Added a global maximum of 5 open automatic paper positions across all markets/timeframes.
 - Duplicate open positions for the same market are blocked across timeframes.
-- This is still a paper-trading app. Chart Analysis AI and Harmonic Pattern AI are integrated as local rule-based analytical components; Hermes is not connected as an external agent in this package; no real broker order execution or pending-order manager exists here.
+- This is a paper-trading app. Chart Analysis AI Agent is the only dedicated chart-analysis agent enabled. Harmonic Pattern AI Agent has been removed from active code, votes, dashboard panels and tests. The local analysis agents are rule-based components; this package does not establish a connected external Hermes runtime or live broker order execution.
 
 
 AGENT INTEGRATION UPDATE:
 - Added trading_engine/agents.py.
-- Chart Analysis AI Agent evaluates trend, RSI, directional strength and higher-timeframe bias.
-- Harmonic Pattern AI Agent checks confirmed swing pivots for heuristic Gartley, Bat, Butterfly and Crab candidates.
-- Both appear in the dashboard and their qualifying signals contribute votes only when heuristic confidence is at least 70%.
-- Their confidence is not calibrated probability or a proven win rate. The harmonic detector is heuristic and must be evaluated in historical backtests.
-- Hermes is not connected; no claim of a live Hermes runtime/API integration is made.
+- Chart Analysis AI Agent evaluates EMA trend, RSI, directional strength and higher-timeframe bias. Its qualifying signal contributes a vote only when heuristic confidence is at least 70%.
+- Harmonic Pattern AI Agent has been removed from active code and no longer contributes votes or appears in the dashboard.
+- Chart-agent confidence is not calibrated probability or a proven win rate.
+- Hermes external runtime/API connectivity is not verified by this package.
+
+
+HERMES CHART-AGENT SIMPLIFICATION (2026-11-03)
+- Chart Analysis AI Agent is the only dedicated chart-analysis agent.
+- Harmonic Pattern AI Agent function, imports, strategy votes, dashboard columns/panel and test were removed.
+- The general multi-strategy engine, self-learning components, risk gates and paper-only execution remain separate.
+
+- SMC and its simplified liquidity-sweep proxy have also been removed from active strategy votes, in line with the requested configuration.
