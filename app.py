@@ -11,10 +11,14 @@ from streamlit_autorefresh import st_autorefresh
 import json
 import os
 from pathlib import Path
-import requests
+import sys
 
-# MUST be the first Streamlit command in this script.
-st.set_page_config(page_title="Hermes AI Agent — Paper Trading Lab", page_icon="🤖", layout="wide")
+# Streamlit may launch this project through trading_engine/app.py. In that case,
+# explicitly add the repository root so imports such as trading_engine.backtest work.
+PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+import requests
 
 # Keep the dashboard controls visually stable during Streamlit's periodic reruns.
 # Streamlit marks the app stale while a rerun is in progress; its default styling
@@ -205,6 +209,7 @@ try:
 except Exception:
     SKLEARN_AVAILABLE = False
 
+st.set_page_config(page_title="Hermes AI Agent — Paper Trading Lab", page_icon="🤖", layout="wide")
 
 # -----------------------------
 # Configuration / data helpers
