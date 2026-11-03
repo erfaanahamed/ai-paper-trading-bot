@@ -11,13 +11,6 @@ from streamlit_autorefresh import st_autorefresh
 import json
 import os
 from pathlib import Path
-import sys
-
-# Streamlit may launch this project through trading_engine/app.py. In that case,
-# explicitly add the repository root so imports such as trading_engine.backtest work.
-PROJECT_ROOT = Path(__file__).resolve().parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 import requests
 
 # Keep the dashboard controls visually stable during Streamlit's periodic reruns.
