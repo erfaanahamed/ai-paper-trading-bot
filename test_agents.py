@@ -15,5 +15,5 @@ def test_chart_agent_can_detect_bullish_alignment():
     }])
     result = chart_analysis_agent(df, "Bullish")
     assert result["side"] == "BUY"
-    assert result["side"] in ("BUY", "SELL", "WAIT")
+    assert result["confidence"] >= 70
 

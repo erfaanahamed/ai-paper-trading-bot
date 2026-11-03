@@ -28,14 +28,14 @@ def assess_multi_strategy(votes: Mapping[str, str] | None, side: str = "WAIT",
         recommendation = "BUY/SELL votes are tied. Keep the decision at NO TRADE until evidence resolves the conflict."
     elif side == "WAIT":
         recommendation = "The engine has not confirmed an entry. Do not force a trade; review vote agreement and risk gates."
-    elif False:
+    elif confidence < 70:
         recommendation = (
-            f"Directional vote-strength score is {float(confidence or 0):.1f}%, below the configured minimum. "
+            f"Directional vote-strength score is {float(confidence or 0):.1f}%, below the configured 70% minimum. "
             f"Active directional votes agree at {agreement:.1f}%, but agreement is not win probability. "
             "Do not treat this setup as eligible."
         )
     else:
-        recommendation = f"The engine currently favours {side}; verify session, spread, duplicate-order and risk checks before any paper entry."
+        recommendation = f"The engine currently favours {side}; verify the 70% confidence gate, session, spread, duplicate-order and risk checks before any paper entry."
     return {
         "agent": "Multi-Strategy AI Agent",
         "status": "ADVISORY",

@@ -7,22 +7,14 @@ from __future__ import annotations
 import math
 import numpy as np
 import pandas as pd
-try:
-    from trading_engine.fibonacci import fibonacci_analysis
-except Exception:
-    try:
-        from .trading_engine.fibonacci import fibonacci_analysis
-    except Exception:
-        fibonacci_analysis = None
 
 
 def chart_analysis_agent(df: pd.DataFrame, htf_bias: str = "Unknown") -> dict:
     """Combine trend, momentum, directional-strength and candle evidence."""
     if df is None or df.empty:
         return {"name": "Chart Analysis AI Agent", "side": "WAIT", "confidence": 0,
-                "status": "NO DATA", "reason": "No candle data", "fibonacci": {}}
+                "status": "NO DATA", "reason": "No candle data"}
     r = df.iloc[-1]
-    fib = fibonacci_analysis(df) if fibonacci_analysis else {"side": "WAIT", "status": "UNAVAILABLE", "levels": {}, "extensions": {}, "zone": None}
     checks = []
     def val(key):
         try:
@@ -48,9 +40,11 @@ def chart_analysis_agent(df: pd.DataFrame, htf_bias: str = "Unknown") -> dict:
     total = len(directional)
     if total == 0 or buys == sells:
         return {"name": "Chart Analysis AI Agent", "side": "WAIT", "confidence": 0,
-                "status": "ANALYZED", "reason": "Indicators are mixed or lack sufficient evidence", "fibonacci": fib}
+                "status": "ANALYZED", "reason": "Indicators are mixed or lack sufficient evidence"}
     side = "BUY" if buys > sells else "SELL"
     confidence = round(100 * max(buys, sells) / max(len(checks), 1))
+    if confidence < 60:
+        side = "WAIT"
     evidence = f"{buys} bullish / {sells} bearish directional checks"
     return {"name": "Chart Analysis AI Agent", "side": side, "confidence": confidence,
-            "status": "ANALYZED", "reason": evidence, "fibonacci": fib}
+            "status": "ANALYZED", "reason": evidence}
