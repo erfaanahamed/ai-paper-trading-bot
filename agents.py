@@ -1,4 +1,4 @@
-"""Deterministic analysis agents used by the AI Brain paper-trading dashboard.
+"""Deterministic analysis agents used by the Hermes AI Agent paper-trading dashboard.
 
 These are local, rule-based analytical components, not external LLM services.
 Their confidence values describe indicator/pattern agreement, not calibrated win probabilities.

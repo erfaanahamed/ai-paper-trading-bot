@@ -7,7 +7,7 @@ from .costs import total_cost_bps
 def run_backtest(df,htf_df,market,timeframe,config):
  try:
   features=build_features(df); primary=primary_signals_batch(df,market,timeframe,[]); labels=triple_barrier_labels(df,primary,config.get('tp_mult',2),config.get('sl_mult',1),config.get('max_bars',48),config.get('atr_col','ATR'))
-  trades=[]; eq=[float(config.get('balance',100000))]; balance=eq[0]; cost=total_cost_bps(market)
+  trades=[]; eq=[float(config.get('balance',100000))]; balance=eq[0]; cost=float(config.get("cost_bps", total_cost_bps(market)))
   for i in range(len(df)-1):
    side=primary.iloc[i]
    if side==0:continue

@@ -80,20 +80,6 @@ except Exception as package_exc:
             f"Package import: {type(package_exc).__name__}: {str(package_exc)[:100]} | "
             f"Root fallback: {type(root_exc).__name__}: {str(root_exc)[:100]}"
         )
-# Standalone-first SMC import: the main app.py contains the full application and
-# must not require importing trading_engine.app. Prefer the root-level smc.py so
-# deployments still start even if GitHub's upload omitted the package directory.
-try:
-    from smc import add_smc_features, smc_signal
-except ModuleNotFoundError:
-    try:
-        from trading_engine.smc import add_smc_features, smc_signal
-    except ModuleNotFoundError as _smc_import_error:
-        raise ModuleNotFoundError(
-            "SMC module is missing. Upload the root-level smc.py file with app.py."
-        ) from _smc_import_error
-
-
 # -----------------------------
 # News protection (calendar CSV)
 # -----------------------------
@@ -757,9 +743,8 @@ def evaluate_multi_strategy(last, bias="Unknown"):
     if all(np.isfinite(x) for x in [c, h, l, prev_sup, prev_res]):
         if l < prev_sup and c > prev_sup: votes["Liquidity sweep (proxy)"] = "BUY"
         elif h > prev_res and c < prev_res: votes["Liquidity sweep (proxy)"] = "SELL"
-    # Optional SMC vote: explicit heuristic features are added to candle frames upstream.
     # It is one strategy family among several and is never mandatory for all entries.
-    votes["SMC confluence (OB/BOS/CHOCH/FVG/sweep)"] = smc_signal(last) if st.session_state.get("smc_enabled", True) else "WAIT"
+    
     buys = sum(v == "BUY" for v in votes.values())
     sells = sum(v == "SELL" for v in votes.values())
     regime, width, atr_pct = detect_market_regime(last)
@@ -892,7 +877,7 @@ def scan_all_market_signals():
                     "RSI": None, "ADX": None, "Data status": "Insufficient candles or provider returned no data"
                 })
                 continue
-            market_data = add_smc_features(add_adaptive_levels(add_indicators(raw_market), tf))
+            market_data = add_adaptive_levels(add_indicators(raw_market), tf)
             market_data["PrevClose"] = market_data["Close"].shift(1)
             market_data["PrevSupport"] = market_data["Low"].rolling(20).min().shift(2)
             market_data["PrevResistance"] = market_data["High"].rolling(20).max().shift(2)
@@ -984,7 +969,7 @@ def scan_all_market_timeframe_votes():
                                  "Active vote agreement (%)": None, "Directional vote strength (%)": None,
                                  "Decision": "DATA UNAVAILABLE", "Reason": "Insufficient candles or provider returned no data"})
                     continue
-                data = add_smc_features(add_adaptive_levels(add_indicators(raw), timeframe))
+                data = add_adaptive_levels(add_indicators(raw), timeframe)
                 data["PrevClose"] = data["Close"].shift(1)
                 data["PrevSupport"] = data["Low"].rolling(20).min().shift(2)
                 data["PrevResistance"] = data["High"].rolling(20).max().shift(2)
@@ -1140,7 +1125,7 @@ def notify_trade_opened(position):
         return
     seen.add(key)
     msg = (
-        "🔔 AI BRAIN V7 — PAPER TRADE OPENED\\n"
+        "🔔 HERMES AI AGENT — PAPER TRADE OPENED\\n"
         f"Market: {position.get('Market', 'Unknown')} ({position.get('Symbol', '')})\\n"
         f"Action: {position.get('Side', '')} | Timeframe: {position.get('Timeframe', '')}\\n"
         f"Entry: {float(position.get('Entry', 0)):.5f}\\n"
@@ -1636,7 +1621,7 @@ with st.sidebar:
         htf_tf = st.selectbox("Higher-timeframe filter", htf_options, index=htf_default_index, key="settings_htf_tf")
         score_threshold = st.slider("Minimum Signal strength", 50, 95, 70, 1, key="settings_score_threshold")
         risk_pct = st.slider("Risk per trade (%)", 0.25, 1.0, 0.5, 0.25, key="settings_risk_pct")
-        max_daily_loss = st.slider("Daily loss stop (%)", 1.0, 3.0, 2.0, 0.5, key="settings_max_daily_loss")
+        max_daily_loss = 1000.0  # disabled: no daily-loss halt
         max_trades_per_day = st.slider("Maximum paper trades per day", 1, 30, 20, 1, key="settings_max_trades_per_day")
         rr2 = st.slider("TP2 risk/reward", 1.5, 2.5, 2.0, 0.1, key="settings_rr2")
         confirm_settings = st.form_submit_button("✅ Confirm settings", type="primary", use_container_width=True)
@@ -1654,15 +1639,10 @@ with st.sidebar:
         st.session_state.settings_htf_tf_applied = htf_tf
         st.session_state.settings_score_threshold_applied = None
         st.session_state.settings_risk_pct_applied = risk_pct
-        st.session_state.settings_max_daily_loss_applied = max_daily_loss
         st.session_state.settings_max_trades_per_day_applied = max_trades_per_day
         st.session_state.settings_rr2_applied = rr2
         st.success("Settings confirmed for this session.")
-    st.caption("The multi-strategy engine evaluates trend, mean reversion, breakout, momentum, range, volatility expansion, price action and optional SMC confluence. Auto entries require at least 70% directional vote alignment. The 1H chart is a trend filter only; entries remain on 5m/15m/30m. Paper trading only.")
-    st.subheader("🧩 Optional Smart Money Concepts")
-    st.checkbox("Use SMC confluence in decisions", value=st.session_state.get("smc_enabled", True), key="smc_enabled", help="SMC is optional; other strategy families remain eligible when there is no SMC setup.")
-    st.caption("SMC detects heuristic Order Blocks, BOS, CHOCH, Fair Value Gaps and liquidity sweeps from candle OHLC data.")
-
+    st.caption("The multi-strategy engine evaluates trend, mean reversion, breakout, momentum, range, volatility expansion, price action. Auto entries require at least 70% directional vote alignment. The 1H chart is a trend filter only; entries remain on 5m/15m/30m. Paper trading only.")
     st.divider()
     st.subheader("📰 Forex Factory Red-Folder News Protection")
     st.toggle("News Protection ON/OFF", value=st.session_state.get("news_protection_enabled", True),
@@ -1753,7 +1733,7 @@ if st.session_state.trade_day != today_key:
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Virtual balance (USD)", f"${st.session_state.balance:,.2f}")
 col2.metric("Paper trades today", f"{st.session_state.trades_today}/{max_trades_per_day}")
-col3.metric("Daily loss stop", f"{max_daily_loss:.1f}%")
+col3.metric("Daily loss stop", "Disabled")
 col4.metric("Risk per setup", f"{risk_pct:.2f}%")
 
 if st.button("🔄 Refresh all market data", type="primary"):
@@ -1871,7 +1851,7 @@ else:
 st.divider()
 st.subheader(f"📊 Detailed chart and indicators: {market_name}")
 with st.expander("⚡ Multi-strategy engine: strategy votes & market regime", expanded=True):
-    st.write("The engine evaluates multiple rule-based strategy families, including optional SMC confluence, detects a broad market regime, then selects up to three strategies per symbol/timeframe. It uses closed-trade outcomes recorded for that exact market and timeframe when enough examples exist; otherwise it uses regime-based priors during warm-up. At least two selected strategies must agree. This is adaptive research logic, not literally every strategy worldwide. Live news trading is not active without an economic-calendar/news feed.")
+    st.write("The engine evaluates multiple rule-based strategy families, detects a broad market regime, then selects up to three strategies per symbol/timeframe. It uses closed-trade outcomes recorded for that exact market and timeframe when enough examples exist; otherwise it uses regime-based priors during warm-up. At least two selected strategies must agree. This is adaptive research logic, not literally every strategy worldwide. Live news trading is not active without an economic-calendar/news feed.")
     if not overview.empty:
         cols = [c for c in ["Market", "Signal", "Market regime", "Strategy BUY votes", "Strategy SELL votes", "Selected strategies", "Selection mode", "Data status"] if c in overview.columns]
         st.dataframe(overview[cols], use_container_width=True, hide_index=True)
@@ -1881,7 +1861,7 @@ st.caption(f"Per-symbol auto-trading is {'ON' if st.session_state.symbol_trade_e
 with st.spinner("Downloading selected-market candles and evaluating Hermes AI Agent..."):
     raw = download_data(cfg["symbol"], signal_tf)
     htf = download_data(cfg["symbol"], htf_tf)
-    data = add_smc_features(add_adaptive_levels(add_indicators(raw), signal_tf)) if not raw.empty else pd.DataFrame()
+    data = add_adaptive_levels(add_indicators(raw), signal_tf) if not raw.empty else pd.DataFrame()
     if not data.empty:
         data["PrevClose"] = data["Close"].shift(1)
         data["PrevSupport"] = data["Low"].rolling(20).min().shift(2)
@@ -1928,7 +1908,7 @@ with st.expander("🤖 Multi-Strategy AI Agent — all-market vote analysis", ex
     else:
         st.warning("No all-market timeframe vote results are available yet.")
     st.caption("Active vote agreement = leading BUY/SELL votes divided by all BUY/SELL votes. Directional vote strength = leading-side votes divided by all strategy slots, including WAIT. These are heuristic vote metrics, not win probabilities. The table does not override session, news, duplicate-position, global five-position, or other risk gates.")
-daily_loss_reached = ((st.session_state.daily_start - st.session_state.balance) / max(st.session_state.daily_start, 1) * 100) >= max_daily_loss
+daily_loss_reached = False  # daily-loss halt disabled by user request
 if st.session_state.trades_today >= max_trades_per_day:
     side = "WAIT"
     checks = {"Daily trade limit reached": True}
@@ -1943,13 +1923,6 @@ m2.metric("HTF bias", bias)
 m3.metric("AI Signal strength", f"{score}/100")
 m4.metric("RSI / MFI", f"{last['RSI']:.1f} / {last['MFI']:.1f}" if pd.notna(last["MFI"]) else f"{last['RSI']:.1f} / n/a")
 m5.metric("ADX / Rel. volume", f"{last['ADX']:.1f} / {last['RelVol']:.2f}x" if pd.notna(last["RelVol"]) else f"{last['ADX']:.1f} / n/a")
-
-with st.expander("🧩 SMC detector — Order Blocks, BOS, CHOCH, FVG & Liquidity Sweeps", expanded=False):
-    smc_now = smc_signal(last)
-    st.write(f"Optional SMC candidate: **{smc_now}** · SMC voting is {'ON' if st.session_state.get('smc_enabled', True) else 'OFF'}.")
-    smc_cols = ["SMC_BOS", "SMC_CHOCH", "SMC_FVG", "SMC_OB", "SMC_OB_Retest", "SMC_LiquiditySweep", "SMC_Active_OB_Bottom", "SMC_Active_OB_Top"]
-    st.dataframe(data[smc_cols].tail(12), use_container_width=True)
-    st.caption("SMC zones are rule-based OHLC heuristics, not proof of institutional orders. BOS/CHOCH and zones can be noisy; validate them on unseen data before relying on them.")
 
 with st.expander("⚡ Self-learning engine — trade outcomes + machine learning", expanded=True):
     l1, l2, l3 = st.columns(3)
@@ -2007,7 +1980,7 @@ with st.expander("🔬 Controlled strategy discovery — research candidates", e
             st.info(f"Candidate research skipped safely: {str(exc)[:120]}")
 
 if st.session_state.halted:
-    st.error("Paper bot is halted by the daily loss control. It will reset on the next calendar day.")
+    st.info("Daily-loss halt is disabled. Position sizing and other entry protections remain active.")
 elif st.session_state.trades_today >= max_trades_per_day:
     st.error(f"Daily trade limit reached ({max_trades_per_day}). No more paper trades will be allowed today.")
 elif side in ("BUY","SELL"):
@@ -2067,7 +2040,7 @@ def run_all_market_scan(allow_new_entries=True):
             if scan_raw.empty or len(scan_raw) < 60:
                 all_events.append(f"{scan_name}: skipped; insufficient market data.")
                 continue
-            scan_data = add_smc_features(add_adaptive_levels(add_indicators(scan_raw), scan_tf))
+            scan_data = add_adaptive_levels(add_indicators(scan_raw), scan_tf)
             scan_data["PrevClose"] = scan_data["Close"].shift(1)
             scan_data["PrevSupport"] = scan_data["Low"].rolling(20).min().shift(2)
             scan_data["PrevResistance"] = scan_data["High"].rolling(20).max().shift(2)
@@ -2115,7 +2088,7 @@ with st.expander("🔔 Trade execution notifications", expanded=True):
         st.warning("Telegram is not configured. Add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to Streamlit app Secrets, then redeploy.")
     else:
         if st.button("📨 Send Telegram test message", key="telegram_test_message"):
-            test_text = "✅ AI BRAIN V7 Telegram test successful. Trade notifications are configured. This is a test message, not a trade signal."
+            test_text = "✅ HERMES AI AGENT Telegram test successful. Trade notifications are configured. This is a test message, not a trade signal."
             tg_ok, tg_status = _send_telegram_message(tg_token, tg_chat_id, test_text)
             if tg_ok:
                 st.success(tg_status)
@@ -2194,13 +2167,13 @@ if side in ("BUY","SELL"):
 else:
     levels = None
 
-with st.expander("AI Brain — condition-by-condition explanation", expanded=True):
+with st.expander("Hermes AI Agent — condition-by-condition explanation", expanded=True):
     st.write("Directional signals use trend, momentum, DI, VWAP, Bollinger Bands and higher-timeframe alignment. Stop-loss and target levels are validated so BUY targets are above entry and SELL targets are below entry.")
     for name, passed in checks.items():
         st.write(("✅ " if passed else "⬜ ") + name)
 
 with st.expander("🧪 Advanced Strategy Discovery Lab", expanded=False):
-    st.write("Research-only candidate testing. It compares a small, explicit strategy library (including an SMC candidate) on chronological train/validation segments; it does not guarantee profitability and does not silently replace the running strategy.")
+    st.write("Research-only candidate testing. It compares a small, explicit strategy library on chronological train/validation segments; it does not guarantee profitability and does not silently replace the running strategy.")
     st.caption("Candidates are assessed after estimated round-trip costs. A candidate is only research-eligible when it has enough validation trades and positive validation expectancy. Final adoption still requires longer walk-forward and paper-trading validation.")
     if st.button("Run strategy discovery on selected market", key="run_strategy_discovery"):
         try:
@@ -2220,22 +2193,6 @@ fig = go.Figure(data=[go.Candlestick(x=chart_df.index, open=chart_df["Open"], hi
 for col, label in [("EMA9","EMA 9"),("EMA21","EMA 21"),("EMA50","EMA 50"),("EMA200","EMA 200"),("BB_Upper","BB Upper"),("BB_Mid","BB Middle"),("BB_Lower","BB Lower"),("Support","Support"),("Resistance","Resistance"),("PowerUpper","Power Upper"),("PowerMid","Power Mid"),("PowerLower","Power Lower")]:
     if col in chart_df:
         fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df[col], mode="lines", name=label, connectgaps=False))
-for col, label in [("SMC_Active_OB_Top", "SMC Active OB Top"), ("SMC_Active_OB_Bottom", "SMC Active OB Bottom")]:
-    if col in chart_df and chart_df[col].notna().any():
-        fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df[col], mode="lines", name=label, line=dict(dash="dash"), connectgaps=True))
-fig.update_layout(height=620, xaxis_rangeslider_visible=False, legend_orientation="h", margin=dict(l=10,r=10,t=30,b=10))
-# Draw active automatic position levels when they belong to the selected market.
-for pos in st.session_state.auto_open_positions:
-    if pos.get("Market") == market_name:
-        for key, label in [("Entry", "Paper Entry"), ("Stop", "Paper Stop"), ("TP1", "Paper TP1"), ("TP2", "Paper TP2")]:
-            if key in pos:
-                fig.add_hline(y=float(pos[key]), line_dash="dash", annotation_text=label, annotation_position="top left")
-# Re-render after adding trade-level lines.
-st.plotly_chart(fig, use_container_width=True, key="candlestick_chart_with_trade_levels")
-st.subheader("Recent candles and indicators")
-show_cols = ["Open","High","Low","Close","Volume","RSI","MFI","ADX","EMA9","EMA21","EMA50","EMA200","BB_Lower","BB_Mid","BB_Upper","VWAP","ATR","RelVol","Support","Resistance","PowerLower","PowerMid","PowerUpper","PLUS_DI","MINUS_DI"]
-st.dataframe(data[show_cols].tail(25).sort_index(ascending=False), use_container_width=True)
-
 st.subheader("Paper trade log")
 if st.session_state.trades:
     log = pd.DataFrame(st.session_state.trades)
@@ -2267,16 +2224,41 @@ if st.session_state.trades:
 else:
     st.info("No paper trades recorded yet. When a setup passes the filters, use the Record button to add it to the log.")
 
-with st.expander("Backtest (historical, simplified)", expanded=True):
-    st.warning("Backtest is approximate and educational: no spread, commissions, swaps, funding, broker contract specs, or realistic slippage. Intrabar stop/target ordering is conservative, but this is not a substitute for a proper event-driven backtester.")
+with st.expander("Backtest (historical, multi-strategy engine)", expanded=True):
+    st.warning("Uses the same multi-strategy directional signal engine as the research scanner. It is still a simplified candle-based simulation: contract sizing, broker-specific spreads, swaps/funding, partial TP1 execution and full market-session/news gates are not fully modelled. Results are not a profitability guarantee.")
     st.selectbox("Backtest range (based on available Yahoo candles)", ["Current loaded history"], index=0, key="bt_period")
     cost_bps = st.slider("Estimated round-trip costs (basis points of price × units)", 0.0, 20.0, 2.0, 0.5, key="bt_cost_bps")
     if "backtest_result" not in st.session_state:
         st.session_state.backtest_result = None
     if st.button("Run backtest", key="run_backtest_button"):
         with st.spinner("Running historical backtest… keep this page open until it finishes."):
-            bt, final_balance, err = run_backtest(raw, htf, signal_tf, htf_tf, score_threshold, risk_pct, rr2, float(st.session_state.starting_balance_applied), max_daily_loss, cost_bps)
-            diagnostics = diagnose_backtest_filters(raw, htf, signal_tf, htf_tf, score_threshold, max_daily_loss)
+            try:
+                from trading_engine.indicators import add_indicators as engine_add_indicators
+                from trading_engine.backtest import run_backtest as run_engine_backtest
+                engine_frame = engine_add_indicators(raw.copy())
+                engine_result = run_engine_backtest(
+                    engine_frame, None, market_name, signal_tf,
+                    {"balance": float(st.session_state.starting_balance_applied), "max_bars": 48,
+                     "tp_mult": float(rr2), "sl_mult": 1.0, "cost_bps": float(cost_bps)}
+                )
+                if engine_result.get("error"):
+                    bt, final_balance, err = pd.DataFrame(), float(st.session_state.starting_balance_applied), engine_result["error"]
+                else:
+                    source = engine_result["trades"].copy()
+                    source["PnL (price units)"] = source["net_pnl"]
+                    source["Balance"] = float(st.session_state.starting_balance_applied) + source["net_pnl"].cumsum()
+                    source["Entry time"] = source["entry_index"].map(lambda i: str(engine_frame.index[int(i)]))
+                    source["Exit time"] = source["exit_index"].map(lambda i: str(engine_frame.index[int(i)]))
+                    source["Side"] = source["side"]
+                    source["Entry"] = source["entry"]
+                    source["Exit"] = source["exit"]
+                    bt = source
+                    final_balance = float(engine_result["equity_curve"].iloc[-1]) if len(engine_result["equity_curve"]) else float(st.session_state.starting_balance_applied)
+                    err = None
+                diagnostics = pd.DataFrame([{"Check": "Multi-strategy engine", "Result": "Completed" if not err else "Error", "Details": "Chronological next-bar entry; approximate costs; candle-based exits." if not err else err}])
+            except Exception as exc:
+                bt, final_balance, err = pd.DataFrame(), float(st.session_state.starting_balance_applied), f"Engine backtest failed: {type(exc).__name__}: {exc}"
+                diagnostics = pd.DataFrame([{"Check": "Multi-strategy engine", "Result": "Failed", "Details": err}])
             st.session_state.backtest_result = {"trades": bt, "final_balance": final_balance, "error": err,
                 "diagnostics": diagnostics, "run_at": datetime.now().isoformat(timespec="seconds")}
     result = st.session_state.get("backtest_result")

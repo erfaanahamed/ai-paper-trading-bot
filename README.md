@@ -1,4 +1,4 @@
-# AI Brain Hybrid Self-Learning Research Bot
+# Hermes AI Agent Hybrid Self-Learning Paper Trading System
 
 ## Run on a computer
 ```bash
