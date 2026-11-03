@@ -1,0 +1,17 @@
+HERMES AI AGENT – FIBONACCI + HIGH-SETUP UPDATE
+
+Implemented in this build:
+- Added automatic Fibonacci retracement levels (0.236, 0.382, 0.500, 0.618, 0.786).
+- Added Fibonacci extension levels (1.272, 1.618, 2.000).
+- Added automatic swing high/low detection and an ATR-adaptive 0.50–0.618 golden-pocket zone.
+- Integrated Fibonacci analysis output into the existing Chart Analysis Agent; it is a confluence/analysis input, not a standalone trade trigger.
+- Removed the 70% confidence / directional vote-strength entry threshold and the associated settings slider.
+- High-setup-only rule: the multi-strategy selector requires at least two independent strategy votes and a strict directional majority. Low setups and ties remain WAIT.
+- Existing paper trade level creation is retained: Entry, Stop-Loss, TP1 and TP2 are calculated and validated for correct directional ordering before a position is opened.
+- Existing risk sizing, session/news protection, duplicate-market protection and global open-position cap remain active.
+- No real-money execution is enabled; this remains paper trading.
+
+Validation:
+- Python compileall completed successfully.
+- Test suite: 38 passed using PYTHONPATH=. pytest -q trading_engine/tests.
+- These are local tests; live Streamlit deployment and market-data behaviour still require verification after upload.

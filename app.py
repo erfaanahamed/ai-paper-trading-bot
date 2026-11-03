@@ -229,8 +229,7 @@ MARKETS = {
 }
 INTERVAL_MAP = {"5m": ("5m", "5d"), "15m": ("15m", "60d"), "30m": ("30m", "60d"), "1h": ("1h", "60d")}
 
-# Global safety settings. The 0-100 engine score is directional vote strength across all strategy slots, not win probability.
-MIN_CONFIDENCE_SCORE = 70
+# Global safety settings. High-setup entries require a clear majority of at least two independent strategy votes.
 MAX_GLOBAL_OPEN_POSITIONS = 5
 
 
@@ -889,7 +888,7 @@ def scan_all_market_signals():
             _, raw_score, strategy_votes, regime, raw_buys, raw_sells = evaluate_multi_strategy(last_row, bias_value)
             # Agents contribute to the final vote only when their own confidence is at least 70%.
             strategy_votes["Chart Analysis AI Agent"] = (
-                chart_agent["side"] if chart_agent["side"] in ("BUY", "SELL") and chart_agent["confidence"] >= 70 else "WAIT")
+                chart_agent["side"] if chart_agent["side"] in ("BUY", "SELL") else "WAIT")
             best_side, selected_strategies, active_votes, buy_votes, sell_votes, adaptive_note, _ = adaptive_strategy_selection(
                 strategy_votes, regime, name, tf, st.session_state.get("trades", load_trade_log()))
             best_score = round(max(buy_votes, sell_votes))
@@ -903,7 +902,7 @@ def scan_all_market_signals():
                 "Market regime": regime, "Strategy BUY votes": buy_votes, "Strategy SELL votes": sell_votes,
                 "Selected strategies": ", ".join(selected_strategies), "Selection mode": adaptive_note,
                 "Chart Analysis Agent": chart_agent["side"],
-                "Chart Agent confidence (%)": chart_agent["confidence"],
+                "Chart Agent direction": chart_agent["side"],
                 "ML win probability": round(ml_prob * 100, 1) if ml_prob is not None else None,
                 "RSI": round(float(last_row["RSI"]), 1) if pd.notna(last_row["RSI"]) else None,
                 "ADX": round(float(last_row["ADX"]), 1) if pd.notna(last_row["ADX"]) else None,
@@ -971,7 +970,7 @@ def scan_all_market_timeframe_votes():
                 last_row = data.iloc[-1]
                 chart = chart_analysis_agent(data, bias)
                 raw_side, _, votes, regime, _, _ = evaluate_multi_strategy(last_row, bias)
-                votes["Chart Analysis AI Agent"] = chart["side"] if chart["side"] in ("BUY", "SELL") and chart["confidence"] >= 70 else "WAIT"
+                votes["Chart Analysis AI Agent"] = chart["side"] if chart["side"] in ("BUY", "SELL") else "WAIT"
                 buys = sum(v == "BUY" for v in votes.values())
                 sells = sum(v == "SELL" for v in votes.values())
                 active = buys + sells
@@ -981,16 +980,13 @@ def scan_all_market_timeframe_votes():
                 decision = raw_side
                 if raw_side == "WAIT":
                     reasons.append("No clear directional majority (requires at least two votes)")
-                if raw_side in ("BUY", "SELL") and strength < MIN_CONFIDENCE_SCORE:
-                    decision = "WAIT"
-                    reasons.append(f"Directional vote strength {strength:.1f}% is below {MIN_CONFIDENCE_SCORE}%")
                 if bias == "Unknown":
                     reasons.append("1H trend context unavailable")
                 rows.append({**base, "BUY votes": buys, "SELL votes": sells,
                              "Active vote agreement (%)": round(agreement, 1),
                              "Directional vote strength (%)": round(strength, 1),
                              "Decision": decision,
-                             "Reason": "; ".join(reasons) if reasons else "Vote gate passed; other live entry/risk filters still apply",
+                             "Reason": "; ".join(reasons) if reasons else "High-setup vote majority found; other live entry/risk filters still apply",
                              "Market regime": regime, "Chart Agent": chart["side"],
                              "Chart Agent": chart["side"]})
             except Exception as exc:
@@ -1324,9 +1320,9 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
     profile = learning_profile(current_trades)
     _, raw_score, checks, regime, raw_buy_votes, raw_sell_votes = evaluate_multi_strategy(last, bias)
     chart_agent = chart_analysis_agent(d, bias)
-    # Only sufficiently confident agent outputs are added as directional votes.
+    # Chart Analysis contributes its direction; no arbitrary confidence-percentage gate.
     checks["Chart Analysis AI Agent"] = (
-        chart_agent["side"] if chart_agent["side"] in ("BUY", "SELL") and chart_agent["confidence"] >= 70 else "WAIT")
+        chart_agent["side"] if chart_agent["side"] in ("BUY", "SELL") else "WAIT")
     side, selected_strategies, active_votes, buy_votes, sell_votes, adaptive_note, strategy_perf = adaptive_strategy_selection(
         checks, regime, market_name, timeframe, current_trades)
     score = round(max(buy_votes, sell_votes))
@@ -1334,12 +1330,9 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
         f"Chart Analysis Agent: {chart_agent['side']} ({chart_agent['confidence']}%). "
         "Agent confidence is a heuristic agreement score, not a calibrated win probability."
     )
-    if side in ("BUY", "SELL") and score < MIN_CONFIDENCE_SCORE:
-        side, ml_probability = "WAIT", None
-        ml_note = (f"Directional vote-strength gate blocked setup ({score}% of all strategy slots support the leading side; "
-                   f"minimum {MIN_CONFIDENCE_SCORE}%). This is not a calibrated win probability.")
-    else:
-        side, ml_probability, ml_note = apply_learning_gate(side, last, bias, score, profile)
+    # Low setups are not traded: the strategy selector already requires at least two
+    # independent votes with a strict BUY/SELL majority. Keep the learned risk filter.
+    side, ml_probability, ml_note = apply_learning_gate(side, last, bias, score, profile)
     if side in ("BUY", "SELL"):
         events.append(f"Strategy selector: {adaptive_note}; selected: {', '.join(selected_strategies)}. {ml_note}")
         levels = make_trade_levels(last, side, risk_pct, rr2)
@@ -1366,7 +1359,7 @@ def simulate_auto_paper_scan(data, market_name, symbol, timeframe, bias, thresho
                     return balance, trades_today, daily_start_balance, open_positions, events, "Invalid trade levels rejected."
                 pos = {
                     "Opened": datetime.now().isoformat(timespec="seconds"), "Market": market_name,
-                    "Symbol": symbol, "Timeframe": timeframe, "Side": side, "Score": score, "ConfidenceScore": score,
+                    "Symbol": symbol, "Timeframe": timeframe, "Side": side, "Score": None, "ConfidenceScore": None,
                     "Entry": entry, "Stop": stop, "InitialStop": stop, "TP1": tp1, "TP2": tp2,
                     "Strategy names": "; ".join([k for k,v in active_votes.items() if v == side]),
                     "Selected strategy set": "; ".join(selected_strategies), "Market regime": regime,
@@ -1608,7 +1601,6 @@ with st.sidebar:
         htf_options = ["15m", "30m", "1h"]
         htf_default_index = htf_options.index("1h")
         htf_tf = st.selectbox("Higher-timeframe filter", htf_options, index=htf_default_index, key="settings_htf_tf")
-        score_threshold = st.slider("Minimum Signal strength", 50, 95, 70, 1, key="settings_score_threshold")
         risk_pct = st.slider("Risk per trade (%)", 0.25, 1.0, 0.5, 0.25, key="settings_risk_pct")
         max_daily_loss = 1000.0  # disabled: no daily-loss halt
         max_trades_per_day = st.slider("Maximum paper trades per day", 1, 30, 20, 1, key="settings_max_trades_per_day")
@@ -1626,12 +1618,11 @@ with st.sidebar:
         st.session_state.settings_market_applied = market_name
         st.session_state.settings_signal_tf = signal_tf
         st.session_state.settings_htf_tf_applied = htf_tf
-        st.session_state.settings_score_threshold_applied = None
         st.session_state.settings_risk_pct_applied = risk_pct
         st.session_state.settings_max_trades_per_day_applied = max_trades_per_day
         st.session_state.settings_rr2_applied = rr2
         st.success("Settings confirmed for this session.")
-    st.caption("The multi-strategy engine evaluates trend, mean reversion, breakout, momentum, range, volatility expansion and price action. Auto entries require at least 70% directional vote alignment. The 1H chart is a trend filter only; entries remain on 5m/15m/30m. Paper trading only.")
+    st.caption("The multi-strategy engine enters high setups only: at least two independent strategy votes must agree with a strict BUY/SELL majority. No 70% confidence threshold is used. The 1H chart is a trend filter only; entries remain on 5m/15m/30m. Paper trading only.")
     st.divider()
     st.subheader("📰 Forex Factory Red-Folder News Protection")
     st.toggle("News Protection ON/OFF", value=st.session_state.get("news_protection_enabled", True),
@@ -1865,15 +1856,7 @@ checks = strategy_votes
 # Keep the dashboard advisory decision consistent with the automatic-entry gate.
 # A directional signal below the configured vote-strength minimum must display WAIT,
 # even when all active BUY/SELL votes agree with each other.
-if side in ("BUY", "SELL") and score < MIN_CONFIDENCE_SCORE:
-    side, ml_probability = "WAIT", None
-    ml_note = (
-        f"Directional vote-strength gate blocked setup ({score}% of all strategy slots "
-        f"support the leading side; minimum {MIN_CONFIDENCE_SCORE}%). "
-        "This is not a calibrated win probability."
-    )
-else:
-    side, ml_probability, ml_note = apply_learning_gate(side, last, bias, score, learning)
+side, ml_probability, ml_note = apply_learning_gate(side, last, bias, score, learning)
 
 with st.expander("🤖 Multi-Strategy AI Agent — all-market vote analysis", expanded=True):
     st.write("Each row is calculated independently for one market and one entry timeframe. The 1H timeframe is trend context only; entries are analyzed on 5m, 15m and 30m. This table is diagnostic and does not place trades.")
@@ -1969,7 +1952,7 @@ elif st.session_state.trades_today >= max_trades_per_day:
 elif side in ("BUY","SELL"):
     st.success(f"Potential {side} setup — paper signal. {ml_note} This is not a guaranteed trade.")
 else:
-    st.warning(f"WAIT — no setup passed all filters. Best-side Signal strength: {score}/100. {ml_note}")
+    st.warning(f"WAIT — no high setup passed the independent-vote and safety filters. {ml_note}")
 
 st.subheader("Automatic paper trading")
 st.caption(f"Paper trading only. The app script reruns about every 30 seconds while this page stays open and connected. Last refresh: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}. Streamlit reruns the app script rather than updating only individual widgets. Cloud sleep, browser disconnection, or provider delays can interrupt scans.")
