@@ -45,7 +45,7 @@ def test_root_fallback_fibonacci_import():
     # Streamlit deployments may fall back to the repository-root module.
     import importlib.util
     from pathlib import Path
-    root_module = Path(__file__).resolve().parents[2] / "multi_strategy_agent.py"
+    root_module = Path(__file__).resolve().parents[0] / "multi_strategy_agent.py"
     spec = importlib.util.spec_from_file_location("hermes_root_multi_strategy_agent", root_module)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
