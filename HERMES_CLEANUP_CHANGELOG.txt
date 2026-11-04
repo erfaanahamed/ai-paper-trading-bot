@@ -1,0 +1,20 @@
+HERMES AI AGENT CLEAN DASHBOARD UPDATE
+
+Changes:
+- Removed the separate legacy "Multi-strategy engine" dashboard panel.
+- Renamed the main all-market vote panel to "Advanced Multi-Strategy AI Agent".
+- Merged the completed-trade learning metrics into the Advanced Multi-Strategy AI Agent panel.
+- Removed the separate "Self-Learning AI Agent" dashboard subpanel to avoid duplicate learning components.
+- Added root-level adaptive_learning.py and strategy_discovery.py fallback modules.
+- Kept trading_engine/ package in the ZIP because existing signal, risk, backtest, and execution code still imports it.
+- Kept the existing strategy calculation backend intact to avoid breaking trading signals while the dashboard is simplified.
+
+Validation:
+- Python syntax compilation: 47 Python files, no syntax errors.
+- Pytest: 36 passed.
+
+Important:
+- These are local source tests, not proof of a successful Streamlit Cloud deployment.
+- Upload the COMPLETE ZIP contents to the GitHub repository root, including the trading_engine/ folder.
+- Do not upload only app.py. The trading_engine/ package is required by other application modules.
+- Paper-trading validation is recommended before relying on any automated decisions.

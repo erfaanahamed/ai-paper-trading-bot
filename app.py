@@ -43,10 +43,18 @@ except ModuleNotFoundError:
 ADAPTIVE_IMPORT_ERROR = None
 try:
     from trading_engine.adaptive_learning import update_model as update_adaptive_model, learning_diagnostics
-except Exception as exc:
-    update_adaptive_model = None
-    learning_diagnostics = None
-    ADAPTIVE_IMPORT_ERROR = f"{type(exc).__name__}: {str(exc)[:180]}"
+except Exception as package_exc:
+    try:
+        # Root-level fallback is included for deployments that omit the package folder.
+        from adaptive_learning import update_model as update_adaptive_model, learning_diagnostics
+        ADAPTIVE_IMPORT_ERROR = None
+    except Exception as root_exc:
+        update_adaptive_model = None
+        learning_diagnostics = None
+        ADAPTIVE_IMPORT_ERROR = (
+            f"Package import: {type(package_exc).__name__}: {str(package_exc)[:100]} | "
+            f"Root fallback: {type(root_exc).__name__}: {str(root_exc)[:100]}"
+        )
 try:
     from trading_engine.strategy_discovery import discover_strategies
 except Exception:
@@ -1624,7 +1632,7 @@ with st.sidebar:
         st.session_state.settings_max_trades_per_day_applied = max_trades_per_day
         st.session_state.settings_rr2_applied = rr2
         st.success("Settings confirmed for this session.")
-    st.caption("The multi-strategy engine evaluates trend, mean reversion, breakout, momentum, range, volatility expansion and price action. Auto entries require at least 70% directional vote alignment. The 1H chart is a trend filter only; entries remain on 5m/15m/30m. Paper trading only.")
+    st.caption("The Advanced Multi-Strategy AI Agent evaluates trend, mean reversion, breakout, momentum, range, volatility expansion and price action. Auto entries require at least 70% directional vote alignment. The 1H chart is a trend filter only; entries remain on 5m/15m/30m. Paper trading only.")
     st.divider()
     st.subheader("📰 Forex Factory Red-Folder News Protection")
     st.toggle("News Protection ON/OFF", value=st.session_state.get("news_protection_enabled", True),
@@ -1826,11 +1834,6 @@ else:
 
 st.divider()
 st.subheader(f"📊 Detailed chart and indicators: {market_name}")
-with st.expander("⚡ Multi-strategy engine: strategy votes & market regime", expanded=True):
-    st.write("The engine evaluates multiple rule-based strategy families, detects a broad market regime, then selects up to three strategies per symbol/timeframe. It uses closed-trade outcomes recorded for that exact market and timeframe when enough examples exist; otherwise it uses regime-based priors during warm-up. At least two selected strategies must agree. This is adaptive research logic, not literally every strategy worldwide. Live news trading is not active without an economic-calendar/news feed.")
-    if not overview.empty:
-        cols = [c for c in ["Market", "Signal", "Market regime", "Strategy BUY votes", "Strategy SELL votes", "Selected strategies", "Selection mode", "Data status"] if c in overview.columns]
-        st.dataframe(overview[cols], use_container_width=True, hide_index=True)
 
 st.caption(f"Per-symbol auto-trading is {'ON' if st.session_state.symbol_trade_enabled.get(market_name, True) else 'OFF'} for {market_name}. Change it in the per-symbol switches above. The Market dropdown only selects the detailed chart.")
 
@@ -1868,7 +1871,7 @@ if side in ("BUY", "SELL") and score < MIN_CONFIDENCE_SCORE:
 else:
     side, ml_probability, ml_note = apply_learning_gate(side, last, bias, score, learning)
 
-with st.expander("🤖 Multi-Strategy AI Agent — all-market vote analysis", expanded=True):
+with st.expander("🤖 Advanced Multi-Strategy AI Agent — decisions, voting & learning", expanded=True):
     st.write("Each row is calculated independently for one market and one entry timeframe. The 1H timeframe is trend context only; entries are analyzed on 5m, 15m and 30m. This table is diagnostic and does not place trades.")
     with st.spinner("Loading cached candles and calculating votes for all markets/timeframes..."):
         all_tf_votes = scan_all_market_timeframe_votes()
@@ -1884,23 +1887,6 @@ with st.expander("🤖 Multi-Strategy AI Agent — all-market vote analysis", ex
     else:
         st.warning("No all-market timeframe vote results are available yet.")
     st.caption("Active vote agreement = leading BUY/SELL votes divided by all BUY/SELL votes. Directional vote strength = leading-side votes divided by all strategy slots, including WAIT. These are heuristic vote metrics, not win probabilities. The table does not override session, news, duplicate-position, global five-position, or other risk gates.")
-daily_loss_reached = False  # daily-loss halt disabled by user request
-if st.session_state.trades_today >= max_trades_per_day:
-    side = "WAIT"
-    checks = {"Daily trade limit reached": True}
-elif daily_loss_reached:
-    st.session_state.halted = True
-    side = "WAIT"
-    checks = {"Daily loss limit reached": True}
-st.subheader(f"{market_name} — {signal_tf} signal")
-m1,m2,m3,m4,m5 = st.columns(5)
-m1.metric("Last candle close", f"{float(last['Close']):,.5f}")
-m2.metric("HTF bias", bias)
-m3.metric("AI Signal strength", f"{score}/100")
-m4.metric("RSI / MFI", f"{last['RSI']:.1f} / {last['MFI']:.1f}" if pd.notna(last["MFI"]) else f"{last['RSI']:.1f} / n/a")
-m5.metric("ADX / Rel. volume", f"{last['ADX']:.1f} / {last['RelVol']:.2f}x" if pd.notna(last["RelVol"]) else f"{last['ADX']:.1f} / n/a")
-
-with st.expander("⚡ Self-learning engine — trade outcomes + machine learning", expanded=True):
     l1, l2, l3 = st.columns(3)
     l1.metric("Completed learning trades", learning["closed_samples"])
     l2.metric("Recent win rate", f"{learning['recent_win_rate']:.1%}" if learning["recent_win_rate"] is not None else "Not enough data")
@@ -1922,24 +1908,22 @@ with st.expander("⚡ Self-learning engine — trade outcomes + machine learning
     if ml_probability is not None:
         st.write(f"Current setup estimated win probability: {ml_probability:.1%}.")
     st.caption("Adaptive learning uses completed paper trades only. A model needs at least 300 trades, at least 50 wins and 50 losses, and chronological holdout AUC ≥ 0.53. Candidate models that fail validation are not promoted. Probabilities are estimates, not guarantees.")
+daily_loss_reached = False  # daily-loss halt disabled by user request
+if st.session_state.trades_today >= max_trades_per_day:
+    side = "WAIT"
+    checks = {"Daily trade limit reached": True}
+elif daily_loss_reached:
+    st.session_state.halted = True
+    side = "WAIT"
+    checks = {"Daily loss limit reached": True}
+st.subheader(f"{market_name} — {signal_tf} signal")
+m1,m2,m3,m4,m5 = st.columns(5)
+m1.metric("Last candle close", f"{float(last['Close']):,.5f}")
+m2.metric("HTF bias", bias)
+m3.metric("AI Signal strength", f"{score}/100")
+m4.metric("RSI / MFI", f"{last['RSI']:.1f} / {last['MFI']:.1f}" if pd.notna(last["MFI"]) else f"{last['RSI']:.1f} / n/a")
+m5.metric("ADX / Rel. volume", f"{last['ADX']:.1f} / {last['RelVol']:.2f}x" if pd.notna(last["RelVol"]) else f"{last['ADX']:.1f} / n/a")
 
-    st.markdown("### 🤖 Self-Learning AI Agent")
-    if assess_self_learning_agent is None:
-        st.warning("Self-Learning AI Agent module could not be imported.")
-        if SELF_LEARNING_AGENT_IMPORT_ERROR:
-            st.code(SELF_LEARNING_AGENT_IMPORT_ERROR)
-    else:
-        try:
-            agent_report = assess_self_learning_agent(
-                st.session_state.trades,
-                diagnostics_fn=learning_diagnostics,
-                model_status={"status": learning.get("model_status", "collecting")},
-            )
-            st.metric("Agent status", agent_report.get("status", "ADVISORY"))
-            st.write(agent_report.get("recommendation", "Continue collecting completed paper-trade evidence."))
-            st.caption(f"Closed trades reviewed: {agent_report.get('closed_trades', 0)} · Order execution authority: No · Automatic rule changes: No")
-        except Exception as exc:
-            st.warning(f"Self-Learning AI Agent report unavailable: {type(exc).__name__}: {str(exc)[:160]}")
 
 with st.expander("🔬 Controlled strategy discovery — research candidates", expanded=False):
     if discover_strategies is None:
@@ -2200,7 +2184,7 @@ if st.session_state.trades:
 else:
     st.info("No paper trades recorded yet. When a setup passes the filters, use the Record button to add it to the log.")
 
-with st.expander("Backtest (historical, multi-strategy engine)", expanded=True):
+with st.expander("Backtest (historical, Advanced Multi-Strategy AI Agent)", expanded=True):
     st.warning("Uses the same multi-strategy directional signal engine as the research scanner. It is still a simplified candle-based simulation: contract sizing, broker-specific spreads, swaps/funding, partial TP1 execution and full market-session/news gates are not fully modelled. Results are not a profitability guarantee.")
     st.selectbox("Backtest range (based on available Yahoo candles)", ["Current loaded history"], index=0, key="bt_period")
     cost_bps = st.slider("Estimated round-trip costs (basis points of price × units)", 0.0, 20.0, 2.0, 0.5, key="bt_cost_bps")
@@ -2231,10 +2215,10 @@ with st.expander("Backtest (historical, multi-strategy engine)", expanded=True):
                     bt = source
                     final_balance = float(engine_result["equity_curve"].iloc[-1]) if len(engine_result["equity_curve"]) else float(st.session_state.starting_balance_applied)
                     err = None
-                diagnostics = pd.DataFrame([{"Check": "Multi-strategy engine", "Result": "Completed" if not err else "Error", "Details": "Chronological next-bar entry; approximate costs; candle-based exits." if not err else err}])
+                diagnostics = pd.DataFrame([{"Check": "Advanced Multi-Strategy AI Agent", "Result": "Completed" if not err else "Error", "Details": "Chronological next-bar entry; approximate costs; candle-based exits." if not err else err}])
             except Exception as exc:
                 bt, final_balance, err = pd.DataFrame(), float(st.session_state.starting_balance_applied), f"Engine backtest failed: {type(exc).__name__}: {exc}"
-                diagnostics = pd.DataFrame([{"Check": "Multi-strategy engine", "Result": "Failed", "Details": err}])
+                diagnostics = pd.DataFrame([{"Check": "Advanced Multi-Strategy AI Agent", "Result": "Failed", "Details": err}])
             st.session_state.backtest_result = {"trades": bt, "final_balance": final_balance, "error": err,
                 "diagnostics": diagnostics, "run_at": datetime.now().isoformat(timespec="seconds")}
     result = st.session_state.get("backtest_result")
