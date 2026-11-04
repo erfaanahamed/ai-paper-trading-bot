@@ -13,6 +13,9 @@ import os
 from pathlib import Path
 import requests
 
+# MUST be the first Streamlit command in this script.
+st.set_page_config(page_title="Hermes AI Agent — Paper Trading Lab", page_icon="🤖", layout="wide")
+
 # Keep the dashboard controls visually stable during Streamlit's periodic reruns.
 # Streamlit marks the app stale while a rerun is in progress; its default styling
 # can fade the whole page, including buttons, which looks like the buttons are disabled.
@@ -202,7 +205,6 @@ try:
 except Exception:
     SKLEARN_AVAILABLE = False
 
-st.set_page_config(page_title="Hermes AI Agent — Paper Trading Lab", page_icon="🤖", layout="wide")
 
 # -----------------------------
 # Configuration / data helpers
@@ -336,7 +338,7 @@ def current_global_sessions(now_utc=None):
 def download_data(symbol, interval):
     yf_interval, period = INTERVAL_MAP[interval]
     try:
-        df = yf.download(symbol, period=period, interval=yf_interval, auto_adjust=False, progress=False, threads=False)
+        df = yf.download(symbol, period=period, interval=yf_interval, auto_adjust=False, progress=False, threads=False, timeout=10)
         if df is None or df.empty:
             return pd.DataFrame()
         if isinstance(df.columns, pd.MultiIndex):
@@ -1745,8 +1747,19 @@ if news_on:
 else:
     st.warning("News Protection is OFF. Scheduled-news entry blocking is disabled.")
 st.caption("The app script reruns about every 30 seconds while this page stays open and connected. Yahoo Finance is an indicative data source, not guaranteed real-time broker data.")
-with st.spinner("Analyzing all configured markets..."):
-    overview = scan_all_market_signals()
+# Avoid blocking the first page render on a batch of external market-data requests.
+# Users can explicitly start the full scan; the selected chart still loads independently below.
+if "market_overview" not in st.session_state:
+    st.session_state.market_overview = pd.DataFrame()
+scan_col, scan_note_col = st.columns([1, 3])
+with scan_col:
+    run_market_scan = st.button("🔎 Scan all configured markets", key="run_all_market_scan")
+with scan_note_col:
+    st.caption("The full multi-market scan makes multiple external data requests. It is started on demand so the dashboard can render without waiting for every provider response.")
+if run_market_scan:
+    with st.spinner("Analyzing all configured markets..."):
+        st.session_state.market_overview = scan_all_market_signals()
+overview = st.session_state.market_overview
 if not overview.empty:
     overview_display = overview.copy()
     overview_display.insert(0, "Auto-trade", ["ON" if st.session_state.symbol_trade_enabled.get(n, True) else "OFF" for n in overview_display["Market"]])
@@ -1754,7 +1767,7 @@ if not overview.empty:
     usable = int((overview["Data status"] == "OK").sum())
     st.caption(f"Markets with usable data: {usable}/{len(overview)}. Provider data may be delayed or unavailable for some symbols.")
 else:
-    st.warning("No market scan results are available yet.")
+    st.info("The dashboard is ready. Select 'Scan all configured markets' when you want the full market overview.")
 
 with st.expander("🎛️ Per-symbol automatic trading switches", expanded=True):
     st.caption("Turn a symbol OFF to prevent new paper entries on that market. Existing open positions will continue to be managed for stop-loss/targets.")

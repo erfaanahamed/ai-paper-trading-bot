@@ -1,8 +1,9 @@
-streamlit>=1.35.0
-streamlit-autorefresh>=1.0.1
-plotly>=5.18.0
-numpy>=1.24.0
-pandas>=2.0.0
-yfinance>=0.2.40
-scikit-learn>=1.3.0
-requests>=2.31.0
+# Pinned to the dependency versions recorded in the user's Streamlit deployment log.
+streamlit==1.66.1
+streamlit-autorefresh==1.0.1
+plotly==7.1.0
+numpy==2.5.4
+pandas==3.1.0
+yfinance==1.8.0
+scikit-learn==1.9.1
+requests==2.34.2
