@@ -1610,8 +1610,8 @@ with st.sidebar:
         htf_default_index = htf_options.index("1h")
         htf_tf = st.selectbox("Higher-timeframe filter", htf_options, index=htf_default_index, key="settings_htf_tf")
         score_threshold = st.slider("Minimum Signal strength", 50, 95, 70, 1, key="settings_score_threshold")
-        risk_pct = st.slider("Risk per trade (%)", 0.25, 1.0, 0.5, 0.25, key="settings_risk_pct")
-        max_daily_loss = 1000.0  # disabled: no daily-loss halt
+        risk_pct = st.slider("Risk per trade (%)", 0.1, 1.0, 0.2, 0.1, key="settings_risk_pct")
+        max_daily_loss = 3.0  # pause new entries after 3% daily loss
         max_trades_per_day = st.slider("Maximum paper trades per day", 1, 30, 20, 1, key="settings_max_trades_per_day")
         rr2 = st.slider("TP2 risk/reward", 1.5, 2.5, 2.0, 0.1, key="settings_rr2")
         confirm_settings = st.form_submit_button("✅ Confirm settings", type="primary", use_container_width=True)
@@ -1723,7 +1723,7 @@ if st.session_state.trade_day != today_key:
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Virtual balance (USD)", f"${st.session_state.balance:,.2f}")
 col2.metric("Paper trades today", f"{st.session_state.trades_today}/{max_trades_per_day}")
-col3.metric("Daily loss stop", "Disabled")
+col3.metric("Daily loss stop", f"{max_daily_loss:.1f}%")
 col4.metric("Risk per setup", f"{risk_pct:.2f}%")
 
 if st.button("🔄 Refresh all market data", type="primary"):
@@ -1908,7 +1908,8 @@ with st.expander("🤖 Advanced Multi-Strategy AI Agent — decisions, voting & 
     if ml_probability is not None:
         st.write(f"Current setup estimated win probability: {ml_probability:.1%}.")
     st.caption("Adaptive learning uses completed paper trades only. A model needs at least 300 trades, at least 50 wins and 50 losses, and chronological holdout AUC ≥ 0.53. Candidate models that fail validation are not promoted. Probabilities are estimates, not guarantees.")
-daily_loss_reached = False  # daily-loss halt disabled by user request
+daily_loss_pct_now = max(0.0, (float(st.session_state.daily_start) - float(st.session_state.balance)) / max(float(st.session_state.daily_start), 1.0) * 100.0)
+daily_loss_reached = daily_loss_pct_now >= max_daily_loss
 if st.session_state.trades_today >= max_trades_per_day:
     side = "WAIT"
     checks = {"Daily trade limit reached": True}
@@ -1923,6 +1924,36 @@ m2.metric("HTF bias", bias)
 m3.metric("AI Signal strength", f"{score}/100")
 m4.metric("RSI / MFI", f"{last['RSI']:.1f} / {last['MFI']:.1f}" if pd.notna(last["MFI"]) else f"{last['RSI']:.1f} / n/a")
 m5.metric("ADX / Rel. volume", f"{last['ADX']:.1f} / {last['RelVol']:.2f}x" if pd.notna(last["RelVol"]) else f"{last['ADX']:.1f} / n/a")
+
+# Independent Fibonacci chart overlay: informational only; it never changes votes or orders.
+try:
+    from trading_engine.multi_strategy_agent import analyse_fibonacci
+except Exception:
+    try:
+        from multi_strategy_agent import analyse_fibonacci
+    except Exception:
+        analyse_fibonacci = None
+if analyse_fibonacci is not None:
+    fib = analyse_fibonacci(data)
+    with st.expander("📐 Fibonacci retracement, extension & zones", expanded=True):
+        if fib.get("available"):
+            st.caption(f"{market_name} · {signal_tf} · {fib.get('direction')} · Swing low {fib['swing_low']:.5f} / swing high {fib['swing_high']:.5f}")
+            fib_rows = [{"Type": "Retracement", "Level": k, "Price": v} for k, v in fib["retracement"].items()]
+            fib_rows += [{"Type": "Extension", "Level": k, "Price": v} for k, v in fib["extensions"].items()]
+            st.dataframe(pd.DataFrame(fib_rows), use_container_width=True, hide_index=True)
+            if fib.get("zones"):
+                st.markdown("**Fibonacci zones**")
+                st.dataframe(pd.DataFrame(fib["zones"]), use_container_width=True, hide_index=True)
+            fig_fib = go.Figure()
+            recent = data.tail(120)
+            fig_fib.add_trace(go.Scatter(x=recent.index, y=recent["Close"], name="Close", mode="lines"))
+            for level, price in fib["retracement"].items():
+                fig_fib.add_hline(y=price, line_dash="dot", annotation_text=f"{level}")
+            fig_fib.update_layout(height=420, title="Fibonacci levels — chart overlay", xaxis_title="Time", yaxis_title="Price")
+            st.plotly_chart(fig_fib, use_container_width=True)
+            st.caption("Fibonacci is chart/agent analysis only. It does not add Buy/Sell votes or trigger trades.")
+        else:
+            st.info(f"Fibonacci unavailable: {fib.get('reason', 'insufficient data')}")
 
 
 with st.expander("🔬 Controlled strategy discovery — research candidates", expanded=False):
@@ -1940,7 +1971,7 @@ with st.expander("🔬 Controlled strategy discovery — research candidates", e
             st.info(f"Candidate research skipped safely: {str(exc)[:120]}")
 
 if st.session_state.halted:
-    st.info("Daily-loss halt is disabled. Position sizing and other entry protections remain active.")
+    st.info(f"Daily-loss protection is active: {daily_loss_pct_now:.2f}% used of the {max_daily_loss:.1f}% limit. New entries are blocked after the limit is reached; existing paper positions continue to be managed.")
 elif st.session_state.trades_today >= max_trades_per_day:
     st.error(f"Daily trade limit reached ({max_trades_per_day}). No more paper trades will be allowed today.")
 elif side in ("BUY","SELL"):
