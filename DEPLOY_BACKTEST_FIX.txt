@@ -1,0 +1,44 @@
+HERMES AI AGENT — BACKTEST IMPORT DEPLOYMENT
+================================================
+
+This deployment bundle contains fewer than 100 files and preserves the
+required trading_engine/ Python package.
+
+FIX INCLUDED
+------------
+The required trading_engine/ directory is included with __init__.py and the
+engine modules, including trading_engine/backtest.py. This addresses the
+reported error:
+ModuleNotFoundError: No module named 'trading_engine'
+
+ANDROID / GITHUB DEPLOY
+-----------------------
+1. Extract this ZIP on your phone.
+2. In the GitHub repository, use the main branch.
+3. Upload the CONTENTS of this extracted folder to the repository root.
+   Do not upload the ZIP itself and do not create an extra enclosing folder.
+4. Keep the trading_engine folder intact. It must be directly beside app.py:
+      app.py
+      requirements.txt
+      runtime.txt
+      trading_engine/
+          __init__.py
+          backtest.py
+          ...
+5. Commit the upload to the same branch used by Streamlit.
+6. In Streamlit Cloud, confirm Main file path is app.py, then reboot the app.
+7. Run the backtest again.
+
+IMPORTANT
+---------
+Do not upload only the Python files inside trading_engine/ to the repository
+root. The folder name and its __init__.py are required for package imports.
+
+Validation of this bundle: the 48 tests in the original uploaded archive passed;
+the trading_engine backtest, indicators, agents, adaptive-learning,
+multi-strategy, self-learning, Fibonacci, and runner modules imported
+successfully in this environment.
+
+A passing local test does not guarantee live market-data availability or
+profitable trading. This remains paper trading only. After deployment, check
+the Streamlit logs and run a backtest for each market/timeframe.

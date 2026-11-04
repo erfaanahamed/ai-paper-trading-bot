@@ -1,0 +1,41 @@
+HERMES BACKTEST IMPORT FIX
+==========================
+
+Root cause
+----------
+The repository contained engine modules (backtest.py, indicators.py, runner.py,
+etc.) at the repository root, but app.py and the tests import them as
+trading_engine.<module>. The required trading_engine/ package directory was
+missing from the deployed ZIP. This caused:
+ModuleNotFoundError: No module named 'trading_engine'
+
+Fix
+---
+Added trading_engine/ as a proper Python package, with the engine modules
+copied into it and an __init__.py. Root-level files are retained to avoid
+breaking existing root-level app and compatibility imports.
+
+Validation performed
+--------------------
+- Python compileall: passed.
+- pytest: 48 passed.
+- Import smoke test: trading_engine.indicators and trading_engine.backtest imported.
+- Backtest function smoke test: returned without an import/runtime error on
+  synthetic OHLCV data (the test generated 0 trades, so this is not a
+  profitability or strategy-validation result).
+
+Important limitations
+---------------------
+This fixes the missing-package import failure. It does NOT prove the hosted
+Streamlit app is fully validated. After deploying, run a real backtest on
+each configured market/timeframe and inspect the diagnostics and trade list.
+The dashboard's own description says the current backtest is a simplified
+candle-based simulation and does not fully model broker contract sizing,
+broker-specific costs, swaps/funding, partial TP1 execution, or all live
+session/news gates. Do not use its results as a live-trading guarantee.
+
+Deployment
+----------
+Upload the CONTENTS of this ZIP to the root of the GitHub main branch,
+preserving the new trading_engine/ folder. Do not upload the outer wrapper
+folder as an extra nested directory. Then allow Streamlit Cloud to redeploy.
