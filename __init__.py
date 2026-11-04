@@ -1,1 +1,1 @@
-"""Research-first paper trading experiment framework."""
+"""Hermes AI paper-trading engine package."""
