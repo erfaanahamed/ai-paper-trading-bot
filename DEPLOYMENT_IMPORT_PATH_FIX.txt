@@ -1,0 +1,18 @@
+HERMES AI AGENT — DEPLOYMENT IMPORT-PATH FIX
+
+This package includes the complete trading_engine/ Python package. The app now adds its own directory and its parent directory to sys.path before importing project modules. This handles Streamlit deployments launched from a nested app entry point, provided the trading_engine/ folder is committed alongside the app.
+
+Important deployment requirement:
+- Upload/extract the ZIP contents while preserving folder structure.
+- The GitHub repository must contain app.py (or the configured entry point) AND trading_engine/__init__.py plus the other trading_engine/*.py modules.
+- Do not upload only app.py or only the root-level Python files.
+- In Streamlit Cloud, confirm the Main file path matches the deployed app.py location, then reboot the app.
+
+Validation in this package:
+- Fibonacci analyser imports pandas as pd in both root and package modules.
+- Fibonacci is advisory-only and does not add BUY/SELL votes or trigger orders.
+- Default risk per trade: 0.2%.
+- Daily loss stop: 3.0%.
+- Python compileall: PASS.
+- Automated tests: 39 passed.
+- Hosted Streamlit deployment still requires user-side verification after upload/reboot.

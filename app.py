@@ -1,4 +1,5 @@
 import math
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, date, timedelta
 from zoneinfo import ZoneInfo
@@ -12,6 +13,15 @@ import json
 import os
 from pathlib import Path
 import requests
+
+# Streamlit Cloud can launch this app from a nested entry-point directory.
+# Add the repository root and app directory so the bundled trading_engine
+# package is importable when the complete repository ZIP is deployed.
+_APP_DIR = Path(__file__).resolve().parent
+for _candidate in (_APP_DIR, _APP_DIR.parent):
+    _candidate_str = str(_candidate)
+    if _candidate_str not in sys.path:
+        sys.path.insert(0, _candidate_str)
 
 st.set_page_config(page_title="Hermes AI Agent — Paper Trading Lab", page_icon="🤖", layout="wide")
 # Keep the dashboard controls visually stable during Streamlit's periodic reruns.
