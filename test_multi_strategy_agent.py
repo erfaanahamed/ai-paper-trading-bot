@@ -14,3 +14,28 @@ def test_agent_reports_votes_without_execution_authority():
 def test_agent_advises_no_trade_when_votes_tied():
     report = assess_multi_strategy({"A": "BUY", "B": "SELL"}, side="WAIT", confidence=50)
     assert "tied" in report["recommendation"]
+
+
+def test_fibonacci_analysis_is_advisory_and_does_not_change_votes():
+    import pandas as pd
+    from trading_engine.multi_strategy_agent import analyse_fibonacci
+    data = pd.DataFrame({
+        "High": [10, 12, 14, 13, 12],
+        "Low": [9, 10, 11, 10, 9.5],
+        "Close": [9.5, 11, 13, 11, 10],
+        "ATR": [0.5] * 5,
+    })
+    report = assess_multi_strategy({"Trend": "BUY", "Momentum": "SELL"},
+                                   side="WAIT", confidence=50, market_data=data, timeframe="5m", symbol="XAUUSD")
+    fib = report["fibonacci_analysis"]
+    assert fib["available"] is True
+    assert "61.8%" in fib["retracement"]
+    assert "161.8%" in fib["extensions"]
+    assert {z["level"] for z in fib["zones"]} == {"38.2%", "50%", "61.8%"}
+    assert report["fibonacci_affects_votes"] is False
+    assert report["buy_votes"] == 1 and report["sell_votes"] == 1
+
+
+def test_fibonacci_handles_missing_market_data():
+    from trading_engine.multi_strategy_agent import analyse_fibonacci
+    assert analyse_fibonacci(None)["available"] is False

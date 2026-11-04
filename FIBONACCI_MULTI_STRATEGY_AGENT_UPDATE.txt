@@ -1,0 +1,21 @@
+HERMES FIBONACCI / MULTI-STRATEGY AI AGENT UPDATE
+
+- Added Fibonacci analysis to the Multi-Strategy AI Agent advisory module.
+- Analyses recent OHLC High/Low/Close data using a configurable 100-bar lookback.
+- Calculates retracement levels: 0%, 23.6%, 38.2%, 50%, 61.8%, 78.6%, 100%.
+- Calculates extension levels: 127.2%, 161.8%, 200%, 261.8%.
+- Builds descriptive zones around 38.2%, 50%, and 61.8%, with width based on ATR when available.
+- Determines upswing/down-swing orientation from the order of the recent range extremes.
+- The advisory report includes symbol, timeframe, levels, zones, nearest retracement and an explicit note.
+- Fibonacci does NOT add BUY/SELL votes, change vote counts, trigger trades, or grant execution authority.
+- Fibonacci was added to the Multi-Strategy AI Agent only. Self-Learning AI Agent was not modified.
+
+Integration contract:
+Call assess_multi_strategy(..., market_data=<OHLCV DataFrame>, timeframe='5m', symbol='XAUUSD')
+to populate the fibonacci_analysis field. Without market_data, the report safely returns
+Fibonacci as unavailable. Existing calls remain backward-compatible.
+
+Validation in this environment:
+- Python compileall: passed.
+- pytest: 38 passed.
+- Hosted Streamlit deployment and live market-data flow have not been verified.
