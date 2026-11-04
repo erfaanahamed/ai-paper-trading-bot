@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import requests
 
+st.set_page_config(page_title="Hermes AI Agent — Paper Trading Lab", page_icon="🤖", layout="wide")
 # Keep the dashboard controls visually stable during Streamlit's periodic reruns.
 # Streamlit marks the app stale while a rerun is in progress; its default styling
 # can fade the whole page, including buttons, which looks like the buttons are disabled.
@@ -202,7 +203,6 @@ try:
 except Exception:
     SKLEARN_AVAILABLE = False
 
-st.set_page_config(page_title="Hermes AI Agent — Paper Trading Lab", page_icon="🤖", layout="wide")
 
 # -----------------------------
 # Configuration / data helpers

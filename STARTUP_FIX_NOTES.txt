@@ -1,0 +1,10 @@
+Hermes Streamlit startup fix
+- Moved st.set_page_config() to the first Streamlit command, before st.markdown().
+- The previous uploaded app.py called st.markdown() near the top and st.set_page_config() much later; Streamlit requires set_page_config before other Streamlit commands.
+- Python 3.12 runtime retained.
+Validation:
+- 45 Python files compiled successfully.
+- pytest: 36 passed.
+Limitations:
+- This does not prove a hosted Streamlit deployment works; deploy and inspect fresh runtime logs.
+- This uploaded source ZIP did not contain Fibonacci implementation (no Fibonacci module or references were present), so this package does not claim Fibonacci has been implemented.
