@@ -1,0 +1,23 @@
+HERMES AI AGENT — FIBONACCI IMPORT FIX
+
+Root cause:
+The repository-root multi_strategy_agent.py used pd.DataFrame / pd.to_numeric
+without importing pandas as pd. Streamlit's traceback showed it loaded this
+root-level fallback and crashed with NameError: name 'pd' is not defined.
+
+Changes:
+1. Synchronized the repository-root multi_strategy_agent.py with the tested
+   trading_engine/multi_strategy_agent.py implementation, including
+   `import pandas as pd`.
+2. Added a regression test that imports and exercises the root-level fallback
+   Fibonacci analyser.
+3. Kept Fibonacci advisory-only: it does not add BUY/SELL votes or trigger trades.
+4. Preserved the existing app settings: risk per trade default 0.2% and daily
+   loss limit 3% (as configured in app.py).
+
+Validation:
+- Python compileall: passed.
+- pytest: 39 passed.
+- The hosted Streamlit app must still be rebooted and checked after this ZIP is
+  committed to the GitHub branch connected to Streamlit. Local tests cannot
+  guarantee live data-provider or hosted-environment behavior.

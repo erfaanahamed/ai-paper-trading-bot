@@ -4,8 +4,9 @@ This is a transparent rule-based adviser, not an external LLM. It explains curre
 strategy votes and closed-trade evidence; it never places orders or changes weights.
 """
 from __future__ import annotations
-from collections import Counter
 from typing import Iterable, Mapping, Any
+
+import pandas as pd
 
 
 def analyse_fibonacci(market_data: Any, lookback: int = 100) -> dict:
@@ -69,32 +70,44 @@ def assess_multi_strategy(votes: Mapping[str, str] | None, side: str = "WAIT",
     sell = sum(str(v).upper() == "SELL" for v in votes.values())
     wait = sum(str(v).upper() not in ("BUY", "SELL") for v in votes.values())
     active = buy + sell
+    # Agreement is calculated only among directional votes. It is NOT the
+    # directional vote-strength score, which may count WAIT votes and use a separate gate.
     agreement = (max(buy, sell) / active * 100) if active else 0.0
     closed = []
     for row in (trades or []):
         status = str(row.get("Status", "CLOSED")).upper()
         if "CLOSED" in status:
             closed.append(row)
+
+    conf = float(confidence or 0)
     if not active:
-        recommendation = "No active strategy votes. Keep the decision at NO TRADE and collect more valid market data."
+        recommendation = "No active BUY/SELL votes. Keep the decision at NO TRADE and collect more valid market data."
     elif buy == sell:
         recommendation = "BUY/SELL votes are tied. Keep the decision at NO TRADE until evidence resolves the conflict."
-    elif side == "WAIT":
-        recommendation = "The engine has not confirmed an entry. Do not force a trade; review vote agreement and risk gates."
-    elif confidence < 70:
+    elif str(side).upper() == "WAIT":
         recommendation = (
-            f"Directional vote-strength score is {float(confidence or 0):.1f}%, below the configured 70% minimum. "
+            f"The engine decision is WAIT. Active directional votes agree at {agreement:.1f}%, "
+            f"but the directional vote-strength score is {conf:.1f}%. These are different metrics; "
+            "review the engine's eligibility gates and do not force a trade."
+        )
+    elif conf < 70:
+        recommendation = (
+            f"Directional vote-strength score is {conf:.1f}%, below the configured 70% minimum. "
             f"Active directional votes agree at {agreement:.1f}%, but agreement is not win probability. "
             "Do not treat this setup as eligible."
         )
     else:
-        recommendation = f"The engine currently favours {side}; verify the 70% confidence gate, session, spread, duplicate-order and risk checks before any paper entry."
+        recommendation = (
+            f"The engine currently favours {side}. Directional vote strength is {conf:.1f}% and active "
+            f"directional vote agreement is {agreement:.1f}%. Verify session, spread, duplicate-order "
+            "and risk checks before any paper entry."
+        )
     fibonacci = analyse_fibonacci(market_data)
     return {
         "agent": "Multi-Strategy AI Agent",
         "status": "ADVISORY",
         "engine_side": str(side),
-        "confidence": float(confidence or 0),
+        "confidence": conf,
         "regime": str(regime or "UNKNOWN"),
         "buy_votes": buy,
         "sell_votes": sell,

@@ -39,3 +39,16 @@ def test_fibonacci_analysis_is_advisory_and_does_not_change_votes():
 def test_fibonacci_handles_missing_market_data():
     from trading_engine.multi_strategy_agent import analyse_fibonacci
     assert analyse_fibonacci(None)["available"] is False
+
+
+def test_root_fallback_fibonacci_import():
+    # Streamlit deployments may fall back to the repository-root module.
+    import importlib.util
+    from pathlib import Path
+    root_module = Path(__file__).resolve().parents[2] / "multi_strategy_agent.py"
+    spec = importlib.util.spec_from_file_location("hermes_root_multi_strategy_agent", root_module)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    import pandas as pd
+    frame = pd.DataFrame({"High": [10, 12, 14], "Low": [9, 10, 11], "Close": [9.5, 11, 13]})
+    assert module.analyse_fibonacci(frame)["available"] is True
