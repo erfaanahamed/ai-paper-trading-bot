@@ -1,0 +1,7 @@
+HERMES FULL PROJECT ZIP — IMPORT PACKAGE MERGED
+
+This archive contains the complete uploaded GitHub project plus the trading_engine/ package from HERMES_TRADING_ENGINE_PACKAGE_IMPORT_FIX.zip. Existing repository files were preserved; no existing file was overwritten.
+
+IMPORTANT: This package merge addresses the missing trading_engine import path only. It does not implement MT5 execution, TradingView execution, FundedNext connectivity, or the requested three-mode dashboard. Test the deployed app and backtest before enabling any broker connection. Use an MT5 demo account for integration testing.
+
+Deployment: extract this archive and upload the contents of ai-paper-trading-bot-main/ to the root of the GitHub repository, preserving folders.

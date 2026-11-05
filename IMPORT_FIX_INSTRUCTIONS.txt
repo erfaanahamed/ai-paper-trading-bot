@@ -1,0 +1,25 @@
+HERMES AI BRAIN V7 — IMPORT PATH FIX
+
+Problem found in the uploaded repository:
+- The root-level engine modules exist (backtest.py, indicators.py, runner.py, etc.).
+- The app and tests import these modules as trading_engine.<module>.
+- The required trading_engine/ package directory was missing.
+
+Fix:
+- This patch adds the trading_engine/ package with the engine modules in the expected locations.
+- It does not remove or overwrite your existing root-level files.
+- It does not enable live trading or connect a broker.
+
+Apply:
+1. Extract this ZIP.
+2. Upload the complete trading_engine folder into the ROOT of your existing GitHub repository.
+3. Keep the existing app.py and all existing root files.
+4. Wait for Streamlit to redeploy.
+5. Run the dashboard and test backtesting in Paper Trading mode first.
+
+Validation performed in this environment:
+- Python syntax compilation: all 50 root Python files passed before patching.
+- Test suite after package fix: 48 passed.
+
+Important:
+This patch addresses the missing trading_engine package/import error. It is not a full audit of strategy profitability, broker compatibility, FundedNext eligibility, or live execution safety.
